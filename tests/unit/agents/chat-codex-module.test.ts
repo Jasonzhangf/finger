@@ -1127,7 +1127,7 @@ describe('chat-codex module', () => {
     });
 
     const tools = (runTurnMock.mock.calls[0][2]?.tools ?? []).map((item) => item.name);
-    expect(tools).toContain('apply_patch');
+    expect(tools).toContain('patch');
   });
 
   it('keeps structured output schema disabled by default', () => {

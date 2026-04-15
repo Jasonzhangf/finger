@@ -10,7 +10,7 @@ describe('registerDefaultRuntimeTools', () => {
     expect(loaded).toContain('shell.exec');
     expect(loaded).toContain('exec_command');
     expect(loaded).toContain('write_stdin');
-    expect(loaded).toContain('apply_patch');
+    expect(loaded).toContain('patch');
     expect(loaded).toContain('shell');
     expect(loaded).toContain('unified_exec');
     expect(loaded).toContain('update_plan');
@@ -28,6 +28,7 @@ describe('registerDefaultRuntimeTools', () => {
     expect(loaded).toContain('skills.status');
     expect(registry.isAvailable('shell.exec')).toBe(true);
     expect(registry.isAvailable('exec_command')).toBe(true);
+    expect(registry.isAvailable('patch')).toBe(true);
     expect(registry.isAvailable('update_plan')).toBe(true);
     expect(registry.isAvailable('context_history.rebuild')).toBe(true);
     expect(registry.isAvailable('skills.list')).toBe(true);

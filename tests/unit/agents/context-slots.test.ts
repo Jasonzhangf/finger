@@ -10,7 +10,7 @@ describe('context slots', () => {
         { role: 'user', content: 'hello' },
         { role: 'assistant', content: 'hi' },
       ],
-      tools: ['shell.exec', 'apply_patch'],
+      tools: ['shell.exec', 'patch'],
     });
 
     expect(result).toBeDefined();

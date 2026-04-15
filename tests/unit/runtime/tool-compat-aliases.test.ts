@@ -37,4 +37,15 @@ describe('tool compatibility aliases', () => {
     expect(candidates).toContain('heartbeat.status');
     expect(candidates).toContain('project.task.status');
   });
+
+  it('resolves patch legacy aliases without exposing them as canonical specs', () => {
+    const candidates = buildToolResolutionCandidates('apply_patch');
+    expect(candidates).toContain('apply_patch');
+    expect(candidates).toContain('patch');
+
+    const specs = augmentToolSpecificationsWithCompatAliases([
+      { name: 'patch', description: 'edit files', inputSchema: { type: 'object' } },
+    ]);
+    expect(specs.map((item) => item.name)).toEqual(['patch']);
+  });
 });

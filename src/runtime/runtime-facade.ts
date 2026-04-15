@@ -308,8 +308,8 @@ export class RuntimeFacade {
     const requested = requestedToolName.trim();
     if (requested.length === 0) return requested;
 
-    // Fast path: exact tool already granted.
-    if (this.toolAccessControl.canUse(agentId, requested).allowed) {
+    // Fast path: exact tool already granted and currently registered.
+    if (this.toolAccessControl.canUse(agentId, requested).allowed && this.toolRegistry.isAvailable(requested)) {
       return requested;
     }
 

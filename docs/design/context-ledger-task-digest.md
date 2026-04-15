@@ -134,7 +134,7 @@ if (learning?.memory_patch?.required) {
     "summary": "...",
     "tags": ["dispatch", "build", "test"],
     "topic": "fix dispatch timeout",
-    "key_tools": ["agent.dispatch", "apply_patch", "exec_command"],
+    "key_tools": ["agent.dispatch", "patch", "exec_command"],
     "tool_calls": [
       {
         "tool": "agent.dispatch",
@@ -161,7 +161,7 @@ const DIGEST_IMPORTANT_TOOLS = new Set([
   // 任务规划与完成
   'update_plan', 'reasoning.stop', 'report-task-completion',
   // 代码修改
-  'apply_patch',
+  'patch', // legacy alias apply_patch is normalized to patch
   // 邮箱与消息
   'mailbox.status', 'mailbox.dequeue', 'mailbox.enqueue',
   // 上下文与Ledger

@@ -14,7 +14,7 @@ Routing precedence (MANDATORY):
   2) `project.task.status`,
   3) `agent.dispatch`,
   4) monitor/report lifecycle.
-- Before any `exec_command` or `apply_patch`, perform this mandatory check:
+- Before any `exec_command` or `patch`, perform this mandatory check:
   - "Does this action implement project work that belongs to project lane?"
   - If yes and no valid exception, STOP and DISPATCH.
 - Valid exceptions are strictly limited to:

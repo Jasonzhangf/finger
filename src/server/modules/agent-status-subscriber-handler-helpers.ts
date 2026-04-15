@@ -259,12 +259,14 @@ export function parseToolSummary(toolName: string, input: unknown, output?: unkn
 } {
   const normalizedToolName = typeof toolName === 'string' ? toolName.trim().toLowerCase() : 'unknown';
   const payload = typeof input === 'object' && input !== null ? input as Record<string, unknown> : {};
-  if (normalizedToolName === 'apply_patch') {
+  if (normalizedToolName === 'patch' || normalizedToolName === 'apply_patch') {
     const patchText = typeof payload.patch === 'string'
       ? payload.patch
-      : typeof input === 'string'
-        ? input
-        : '';
+      : typeof payload.input === 'string'
+        ? payload.input
+        : typeof input === 'string'
+          ? input
+          : '';
     const match = patchText.match(/^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s+(.+)$/m);
     return {
       verb: 'edit',

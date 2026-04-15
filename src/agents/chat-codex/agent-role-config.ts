@@ -3,7 +3,7 @@ export type BaseAgentRole = 'system' | 'project';
 const CORE_EXECUTION_TOOLS = [
   'exec_command',
   'write_stdin',
-  'apply_patch',
+  'patch',
   'view_image',
   'send_local_image',
   'web_search',
@@ -60,7 +60,7 @@ const ORCHESTRATION_TOOLS = [
 ] as const;
 
 const ORCHESTRATOR_DOCUMENTATION_TOOLS = [
-  'apply_patch',
+  'patch',
 ] as const;
 
 const PROJECT_TASK_MANAGEMENT_TOOLS = [

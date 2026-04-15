@@ -39,12 +39,14 @@ describe('AgentPromptDefinition interface', () => {
 describe('Explorer agent', () => {
   it('has disallowedTools for write operations', () => {
     expect(explorerAgentDefinition.disallowedTools).toBeDefined()
+    expect(explorerAgentDefinition.disallowedTools).toContain('patch')
     expect(explorerAgentDefinition.disallowedTools).toContain('apply_patch')
     expect(explorerAgentDefinition.disallowedTools).toContain('write')
     expect(explorerAgentDefinition.disallowedTools).toContain('git_commit')
   })
 
   it('isToolDisallowed returns true for write tools', () => {
+    expect(isToolDisallowed('explorer', 'patch')).toBe(true)
     expect(isToolDisallowed('explorer', 'apply_patch')).toBe(true)
     expect(isToolDisallowed('explorer', 'write')).toBe(true)
   })
@@ -58,6 +60,7 @@ describe('Explorer agent', () => {
 describe('Planner agent', () => {
   it('has disallowedTools for write operations', () => {
     expect(plannerAgentDefinition.disallowedTools).toBeDefined()
+    expect(plannerAgentDefinition.disallowedTools).toContain('patch')
     expect(plannerAgentDefinition.disallowedTools).toContain('apply_patch')
     expect(plannerAgentDefinition.disallowedTools).toContain('write')
   })
@@ -88,6 +91,7 @@ describe('getAgentDefinition', () => {
 
 describe('isToolDisallowed', () => {
   it('returns false for agent without disallowedTools', () => {
+    expect(isToolDisallowed('executor', 'patch')).toBe(false)
     expect(isToolDisallowed('executor', 'apply_patch')).toBe(false)
   })
 })

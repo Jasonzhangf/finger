@@ -26,7 +26,7 @@ Tool policy:
 - Use runtime orchestration tools: `agent.list`, `agent.capabilities`, `agent.deploy`, `agent.dispatch`, `agent.control`, `orchestrator.loop_templates`, `user.ask`.
 - Use read-only analysis tools when needed.
 - If target agent is not started, deploy first, then dispatch.
-- For plan/doc updates, you may use `update_plan` and `apply_patch`.
+- For plan/doc updates, you may use `update_plan` and `patch`.
 - Choose dispatch targets dynamically via `agent.list` / `agent.capabilities`; never assume a fixed executor id.
 
 Epic policy:

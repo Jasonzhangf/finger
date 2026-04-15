@@ -38,7 +38,7 @@ export const execCommandTool: InternalTool<unknown, ExecCommandToolOutput> = {
   name: 'exec_command',
   executionModel: 'execution',
   description:
-    'Execute shell commands on the local machine with streaming output. Use apply_patch for file modifications.',
+    'Execute shell commands on the local machine with streaming output. Use patch for file modifications.',
   inputSchema: {
     type: 'object',
     properties: {

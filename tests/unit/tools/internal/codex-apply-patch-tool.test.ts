@@ -9,11 +9,15 @@ const TEST_CONTEXT_BASE = {
   timestamp: new Date().toISOString(),
 };
 
-describe('codex apply_patch tool', () => {
+describe('codex patch tool', () => {
   const envBackup = { ...process.env };
 
   afterEach(() => {
     process.env = { ...envBackup };
+  });
+
+  it('exposes canonical tool name as patch', () => {
+    expect(applyPatchTool.name).toBe('patch');
   });
 
   it('ignores invalid env override and never returns unavailable custom path', () => {
@@ -55,7 +59,7 @@ fs.writeFileSync(path.join(process.cwd(), fileName), output, 'utf8');
       ].join('\n');
 
       const result = await applyPatchTool.execute(
-        { input: patch },
+        { patch },
         {
           ...TEST_CONTEXT_BASE,
           cwd: dir,
@@ -88,7 +92,7 @@ fs.writeFileSync(path.join(process.cwd(), fileName), output, 'utf8');
       ].join('\n');
 
       const result = await applyPatchTool.execute(
-        { input: patch },
+        { patch },
         {
           ...TEST_CONTEXT_BASE,
           cwd: dir,
@@ -97,6 +101,34 @@ fs.writeFileSync(path.join(process.cwd(), fileName), output, 'utf8');
 
       expect(result.ok).toBe(true);
       expect(readFileSync(file, 'utf-8')).toBe('line1\nline2-updated\nline3\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts raw string patch payloads for compatibility', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'finger-patch-raw-input-'));
+    try {
+      const file = path.join(dir, 'note.txt');
+      writeFileSync(file, 'line1\nline2\n', 'utf-8');
+
+      const patch = [
+        '*** Begin Patch',
+        '*** Update File: note.txt',
+        '@@',
+        ' line1',
+        '-line2',
+        '+line2-updated',
+        '*** End Patch',
+      ].join('\n');
+
+      const result = await applyPatchTool.execute(patch, {
+        ...TEST_CONTEXT_BASE,
+        cwd: dir,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(readFileSync(file, 'utf-8')).toBe('line1\nline2-updated\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -121,7 +153,7 @@ fs.writeFileSync(path.join(process.cwd(), fileName), output, 'utf8');
       ].join('\n');
 
       const result = await applyPatchTool.execute(
-        { input: patch },
+        { patch },
         {
           ...TEST_CONTEXT_BASE,
           cwd: dir,

@@ -114,7 +114,7 @@ export function classifyToolCall(toolName: string, input?: unknown): ToolCategor
     }
   }
 
-  if (['apply_patch', 'write_stdin'].includes(toolName)) return '读写';
+  if (['patch', 'apply_patch', 'write_stdin'].includes(toolName)) return '读写';
 
   if (/^(agent\.|context_ledger|context_history|memsearch|update_plan|clock\.|user\.|bd\b)/.test(toolName)) return '工具';
 
@@ -129,9 +129,9 @@ export function extractTargetFile(toolName: string, input?: unknown): string {
 
   if (Object.keys(obj).length === 0) return '';
 
-  if (toolName === 'apply_patch' && obj.patch) {
-    const patchStr = String(obj.patch);
-    // Try apply_patch format first: *** Update File: path
+  if ((toolName === 'patch' || toolName === 'apply_patch') && (obj.patch || obj.input)) {
+    const patchStr = String(obj.patch ?? obj.input);
+    // Try Finger patch format first: *** Update File: path
     const updateFileMatch = patchStr.match(/^\*{3}\s+Update\s+File:\s*(\S+)/m);
     if (updateFileMatch) return updateFileMatch[1];
     // Try unified diff format: --- a/path

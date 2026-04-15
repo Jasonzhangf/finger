@@ -19,7 +19,7 @@ This document defines the prompt and request-construction contract for chat-code
   - `src/agents/chat-codex/dev-prompts/searcher.md`
 - Transport: `input[]` entry with `role=developer` and `<developer_instructions>` block.
 - Rule: role differences are expressed only in developer zone templates.
-- Orchestrator role additionally allows plan/doc artifact edits via `apply_patch` + `update_plan`.
+- Orchestrator role additionally allows plan/doc artifact edits via `patch` + `update_plan`.
 - Reviewer role enforces claim-evidence audit for executor outputs and practical planning-improvement feedback for orchestrator outputs.
 - Reviewer supports review levels: `feedback` / `soft_gate` / `hard_gate`.
 

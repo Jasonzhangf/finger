@@ -34,7 +34,7 @@ function writeLedger(rootDir: string, sessionId: string, agentId: string): strin
           {
             request: '整理 context rebuild 流程',
             summary: '需要把 overflow 和 topic rebuild 合并到单点',
-            key_tools: ['apply_patch'],
+            key_tools: ['patch'],
             key_reads: ['src/runtime/context-history/rebuild.ts'],
             key_writes: ['src/runtime/context-history/rebuild.ts'],
             tags: ['context', 'rebuild'],

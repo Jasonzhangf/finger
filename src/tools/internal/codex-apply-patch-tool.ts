@@ -4,6 +4,8 @@ import { spawnSync } from 'child_process';
 import { InternalTool, ToolExecutionContext } from './types.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const PATCH_TOOL_NAME = 'patch';
+const LEGACY_APPLY_PATCH_TOOL_NAME = 'apply_patch';
 
 interface ApplyPatchInput {
   input: string;
@@ -50,17 +52,18 @@ interface PatchOpUpdate {
 type PatchOp = PatchOpAdd | PatchOpDelete | PatchOpUpdate;
 
 export const applyPatchTool: InternalTool<unknown, ApplyPatchOutput> = {
-  name: 'apply_patch',
+  name: PATCH_TOOL_NAME,
   executionModel: 'execution',
   description:
-    'Use the apply_patch tool to edit files. Do not call apply_patch through exec_command for file modifications.',
+    'Use the patch tool to edit files. Legacy apply_patch is accepted as a compatibility alias. Do not call patch through exec_command for file modifications.',
   inputSchema: {
     type: 'object',
     properties: {
-      input: { type: 'string', description: 'The entire contents of the apply_patch command' },
+      input: { type: 'string', description: 'Patch text in Finger patch format.' },
+      patch: { type: 'string', description: 'Compatibility alias for input. Patch text in Finger patch format.' },
       timeout_ms: { type: 'number' },
     },
-    required: ['input'],
+    anyOf: [{ required: ['input'] }, { required: ['patch'] }],
     additionalProperties: false,
   },
   execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ApplyPatchOutput> => {
@@ -81,8 +84,8 @@ export const applyPatchTool: InternalTool<unknown, ApplyPatchOutput> = {
       signal: null,
       stdout: summary,
       stderr: '',
-      command: 'internal_apply_patch',
-      commandArray: ['internal_apply_patch'],
+      command: 'internal_patch',
+      commandArray: ['internal_patch'],
       cwd: context.cwd,
       timedOut,
       durationMs,
@@ -91,7 +94,7 @@ export const applyPatchTool: InternalTool<unknown, ApplyPatchOutput> = {
 };
 
 export function resolveApplyPatchCommand(defaultCwd: string): ApplyPatchCommandDescriptor | null {
-  const envBin = process.env.FINGER_CODEX_APPLY_PATCH_BIN;
+  const envBin = process.env.FINGER_CODEX_PATCH_BIN || process.env.FINGER_CODEX_APPLY_PATCH_BIN;
   if (envBin && envBin.trim().length > 0) {
     const resolved = envBin.trim();
     if (isExecutableFile(resolved) || isCommandAvailable(resolved)) {
@@ -102,9 +105,9 @@ export function resolveApplyPatchCommand(defaultCwd: string): ApplyPatchCommandD
     }
   }
 
-  if (isCommandAvailable('apply_patch')) {
+  if (isCommandAvailable(LEGACY_APPLY_PATCH_TOOL_NAME)) {
     return {
-      commandArrayPrefix: ['apply_patch'],
+      commandArrayPrefix: [LEGACY_APPLY_PATCH_TOOL_NAME],
       cwd: defaultCwd,
     };
   }
@@ -113,16 +116,26 @@ export function resolveApplyPatchCommand(defaultCwd: string): ApplyPatchCommandD
 }
 
 function parseApplyPatchInput(rawInput: unknown): ApplyPatchInput {
-  if (!isRecord(rawInput)) {
-    throw new Error('apply_patch input must be an object');
+  if (typeof rawInput === 'string' && rawInput.trim().length > 0) {
+    return { input: rawInput };
   }
 
-  if (typeof rawInput.input !== 'string' || rawInput.input.trim().length === 0) {
-    throw new Error('apply_patch input.input must be a non-empty string');
+  if (!isRecord(rawInput)) {
+    throw new Error('patch input must be an object or non-empty string');
+  }
+
+  const patchText = typeof rawInput.input === 'string' && rawInput.input.trim().length > 0
+    ? rawInput.input
+    : typeof rawInput.patch === 'string' && rawInput.patch.trim().length > 0
+      ? rawInput.patch
+      : '';
+
+  if (!patchText) {
+    throw new Error('patch input must provide a non-empty input or patch string');
   }
 
   const parsed: ApplyPatchInput = {
-    input: rawInput.input,
+    input: patchText,
   };
 
   if (typeof rawInput.timeout_ms === 'number' && Number.isFinite(rawInput.timeout_ms)) {
@@ -136,11 +149,11 @@ function parseApplyPatchOps(input: string): PatchOp[] {
   const normalized = input.replace(/\r\n/g, '\n');
   const lines = normalized.split('\n');
   if (lines.length === 0 || lines[0].trim() !== '*** Begin Patch') {
-    throw new Error('Invalid apply_patch payload: missing "*** Begin Patch"');
+    throw new Error('Invalid patch payload: missing "*** Begin Patch"');
   }
   const endIndex = lines.findIndex((line) => line.trim() === '*** End Patch');
   if (endIndex < 0) {
-    throw new Error('Invalid apply_patch payload: missing "*** End Patch"');
+    throw new Error('Invalid patch payload: missing "*** End Patch"');
   }
   const ops: PatchOp[] = [];
   let i = 1;
@@ -152,7 +165,7 @@ function parseApplyPatchOps(input: string): PatchOp[] {
     }
     if (line.startsWith('*** Add File: ')) {
       const filePath = line.slice('*** Add File: '.length).trim();
-      if (!filePath) throw new Error('Invalid apply_patch payload: missing add file path');
+      if (!filePath) throw new Error('Invalid patch payload: missing add file path');
       i += 1;
       const content: string[] = [];
       while (i < endIndex && !isPatchHeader(lines[i])) {
@@ -172,19 +185,19 @@ function parseApplyPatchOps(input: string): PatchOp[] {
     }
     if (line.startsWith('*** Delete File: ')) {
       const filePath = line.slice('*** Delete File: '.length).trim();
-      if (!filePath) throw new Error('Invalid apply_patch payload: missing delete file path');
+      if (!filePath) throw new Error('Invalid patch payload: missing delete file path');
       ops.push({ kind: 'delete', filePath });
       i += 1;
       continue;
     }
     if (line.startsWith('*** Update File: ')) {
       const filePath = line.slice('*** Update File: '.length).trim();
-      if (!filePath) throw new Error('Invalid apply_patch payload: missing update file path');
+      if (!filePath) throw new Error('Invalid patch payload: missing update file path');
       i += 1;
       let moveTo: string | undefined;
       if (i < endIndex && lines[i].startsWith('*** Move to: ')) {
         const moved = lines[i].slice('*** Move to: '.length).trim();
-        if (!moved) throw new Error('Invalid apply_patch payload: missing move target path');
+        if (!moved) throw new Error('Invalid patch payload: missing move target path');
         moveTo = moved;
         i += 1;
       }
@@ -228,10 +241,10 @@ function parseApplyPatchOps(input: string): PatchOp[] {
       ops.push({ kind: 'update', filePath, moveTo, bodyLines, repairedLooseContent });
       continue;
     }
-    throw new Error(`Invalid apply_patch payload header: ${line}`);
+    throw new Error(`Invalid patch payload header: ${line}`);
   }
   if (ops.length === 0) {
-    throw new Error('Invalid apply_patch payload: no operations');
+    throw new Error('Invalid patch payload: no operations');
   }
   return ops;
 }
@@ -248,7 +261,7 @@ function applyPatchOps(ops: PatchOp[], cwd: string): void {
     if (op.kind === 'add') {
       const target = resolvePatchPath(cwd, op.filePath);
       if (existsSync(target)) {
-        throw new Error(`apply_patch add failed: file already exists: ${op.filePath}`);
+        throw new Error(`patch add failed: file already exists: ${op.filePath}`);
       }
       ensureParentDir(target);
       const next = op.lines.length > 0 ? `${op.lines.join('\n')}\n` : '';
@@ -258,7 +271,7 @@ function applyPatchOps(ops: PatchOp[], cwd: string): void {
     if (op.kind === 'delete') {
       const target = resolvePatchPath(cwd, op.filePath);
       if (!existsSync(target)) {
-        throw new Error(`apply_patch delete failed: file not found: ${op.filePath}`);
+        throw new Error(`patch delete failed: file not found: ${op.filePath}`);
       }
       rmSync(target);
       continue;
@@ -266,7 +279,7 @@ function applyPatchOps(ops: PatchOp[], cwd: string): void {
 
     const sourcePath = resolvePatchPath(cwd, op.filePath);
     if (!existsSync(sourcePath)) {
-      throw new Error(`apply_patch update failed: file not found: ${op.filePath}`);
+      throw new Error(`patch update failed: file not found: ${op.filePath}`);
     }
     const original = readFileSync(sourcePath, 'utf-8');
     const hadTrailingNewline = original.endsWith('\n');
@@ -290,7 +303,7 @@ function applyPatchOps(ops: PatchOp[], cwd: string): void {
         idx = findSubsequence(lines, oldSeq, 0);
       }
       if (idx < 0) {
-        throw new Error(`apply_patch update failed: hunk context not found in ${op.filePath}`);
+        throw new Error(`patch update failed: hunk context not found in ${op.filePath}`);
       }
       lines.splice(idx, oldSeq.length, ...newSeq);
       searchStart = idx + newSeq.length;
@@ -304,7 +317,7 @@ function applyPatchOps(ops: PatchOp[], cwd: string): void {
       const movedTo = resolvePatchPath(cwd, op.moveTo);
       ensureParentDir(movedTo);
       if (existsSync(movedTo)) {
-        throw new Error(`apply_patch move failed: target exists: ${op.moveTo}`);
+        throw new Error(`patch move failed: target exists: ${op.moveTo}`);
       }
       renameSync(sourcePath, movedTo);
     }
@@ -398,3 +411,5 @@ function isExecutableFile(filePath: string): boolean {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
+
+export const patchTool = applyPatchTool;

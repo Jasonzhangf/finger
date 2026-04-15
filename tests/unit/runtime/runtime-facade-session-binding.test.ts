@@ -232,6 +232,31 @@ describe('RuntimeFacade session binding hard guards', () => {
     expect(toolCalls[1]?.toolName).toBe('agent.list');
   });
 
+  it('normalizes legacy apply_patch alias to canonical patch when exact alias is unavailable', async () => {
+    const emits: Array<Record<string, unknown>> = [];
+    const eventBus = {
+      emit: vi.fn(async (evt: Record<string, unknown>) => {
+        emits.push(evt);
+      }),
+      enablePersistence: vi.fn(),
+    } as any;
+    const sessionManager = createSessionManagerStub();
+    const toolRegistry = createToolRegistryStub() as any;
+    toolRegistry.isAvailable.mockImplementation((name: string) => name === 'patch');
+    const runtime = new RuntimeFacade(eventBus, sessionManager, toolRegistry);
+    runtime.grantToolToAgent('finger-system-agent', 'patch');
+
+    await runtime.callTool('finger-system-agent', 'apply_patch', { patch: '*** Begin Patch\n*** Add File: hi.txt\n+hi\n*** End Patch' }, { sessionId: 'system-1' });
+
+    expect(toolRegistry.execute).toHaveBeenCalledWith(
+      'patch',
+      { patch: '*** Begin Patch\n*** Add File: hi.txt\n+hi\n*** End Patch' },
+      expect.objectContaining({ agentId: 'finger-system-agent', sessionId: 'system-1' }),
+    );
+    const toolCall = emits.find((evt) => evt.type === 'tool_call');
+    expect(toolCall?.toolName).toBe('patch');
+  });
+
   it('keeps unknown alias denied when no whitelisted target exists', async () => {
     const eventBus = { emit: vi.fn(async () => undefined), enablePersistence: vi.fn() } as any;
     const sessionManager = createSessionManagerStub();

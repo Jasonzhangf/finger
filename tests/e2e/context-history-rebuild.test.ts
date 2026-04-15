@@ -19,7 +19,7 @@ function writeLedger(rootDir: string): string {
           {
             request: '处理 context rebuild',
             summary: '整理 overflow/topic 唯一实现',
-            key_tools: ['apply_patch'],
+            key_tools: ['patch'],
             key_reads: ['src/runtime/context-history/rebuild.ts'],
             key_writes: ['src/runtime/context-history/rebuild.ts'],
             tags: ['context', 'rebuild'],

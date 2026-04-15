@@ -19,7 +19,7 @@ role=executor
   tags: string[],         // 任务标签（如：["implement", "test", "claim"]）
   toolsUsed: [            // 工具使用记录
     { tool: "exec_command", args: "npm test", status: "success" },
-    { tool: "apply_patch", status: "success" }
+    { tool: "patch", status: "success" }
   ],
   successes: string[],    // 成功经验（本轮学到什么）
   failures: string[]      // 失败教训（本轮遇到什么问题）
@@ -116,7 +116,7 @@ role=executor
 | 工具 | 使用时机 |
 |------|----------|
 | exec_command | 执行 shell 命令（npm test 等） |
-| apply_patch | 应用代码补丁 |
+| patch | 应用代码补丁（兼容旧名 apply_patch） |
 | project.claim_completion | 提交完成声明 |
 | **reasoning.stop** | **结束 turn（必选）** |
 

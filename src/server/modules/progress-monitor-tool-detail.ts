@@ -286,7 +286,7 @@ export function extractToolDetail(toolName: string, params?: string, result?: st
     if (status) details.push(`status=${truncateInline(status, 12)}`);
     return attachError(details.join(' · '));
   }
- if (toolName === 'apply_patch' || toolName === 'internal_apply_patch') {
+ if (toolName === 'patch' || toolName === 'apply_patch' || toolName === 'internal_patch' || toolName === 'internal_apply_patch') {
    const operations: string[] = [];
    const raw = pickString(p.input, p.patch, params);
     let hunkCount = 0;

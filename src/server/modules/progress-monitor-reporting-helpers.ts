@@ -209,7 +209,7 @@ export function describeExecCommand(rawCommand: string): string {
   if (/^\s*git\s+diff\b/.test(lower)) return '\ud83e\udded 查看 Git 差异';
   if (/^\s*(pnpm|npm|yarn)\s+test\b/.test(lower)) return '\ud83e\uddea 运行测试';
   if (/^\s*(pnpm|npm|yarn)\s+build\b/.test(lower)) return '\ud83d\udee0\ufe0f 执行构建';
-  if (/^\s*apply_patch\b/.test(lower)) return '🧩 应用补丁';
+  if (/^\s*(?:patch|apply_patch)\b/.test(lower)) return '🧩 应用补丁';
   if (/^\s*(python|python3|node|tsx|ts-node)\b/.test(lower)) {
     const path = extractReadablePath(raw);
     return path ? `▶ 运行脚本 ${truncateInline(path, 64)}` : '▶ 运行脚本';

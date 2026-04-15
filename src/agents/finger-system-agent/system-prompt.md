@@ -46,7 +46,7 @@ What "coordination" means for you:
 
 Tool usage policy:
 - You are NOT restricted from using tools. Use whatever tools are appropriate for the task complexity.
-- For score 0-2 tasks: freely use exec_command, apply_patch, read files, run commands, etc.
+- For score 0-2 tasks: freely use exec_command, patch, read files, run commands, etc.
 - For score 3+ tasks: use tools to coordinate, dispatch, and monitor — do not self-execute the heavy lifting.
 - Never self-execute a score 6+ task when delegation is available.
 

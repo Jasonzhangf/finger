@@ -25,7 +25,7 @@ function writeLedger(rootDir: string, sessionId: string, agentId: string): strin
           {
             request: '整理 context rebuild',
             summary: '统一 trigger / budget / event 真源',
-            key_tools: ['apply_patch'],
+            key_tools: ['patch'],
             key_reads: ['src/runtime/context-history/runtime-integration.ts'],
             key_writes: ['src/runtime/context-history/runtime-integration.ts'],
             tags: ['context', 'rebuild'],

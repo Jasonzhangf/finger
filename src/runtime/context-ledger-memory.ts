@@ -939,7 +939,7 @@ const DIGEST_IMPORTANT_TOOLS = new Set([
   'report-task-completion',
 
   // 代码修改
-  'apply_patch',
+  'patch',
 
   // 项目管理
   'project.task.status',
@@ -966,7 +966,7 @@ function isImportantToolForDigest(toolName: string): boolean {
 
   // 3. Compatibility aliases
   const compatAliases: Record<string, string> = {
-    'patch': 'apply_patch',
+    'apply_patch': 'patch',
     'dispatch': 'agent.dispatch',
     'capabilities': 'agent.capabilities',
   };

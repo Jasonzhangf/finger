@@ -35,7 +35,8 @@ describe('progress-monitor-utils', () => {
       expect(classifyToolCall('web_search')).toBe('搜索');
     });
 
-    it('classifies apply_patch as 读写', () => {
+    it('classifies patch/apply_patch as 读写', () => {
+      expect(classifyToolCall('patch', { patch: '--- a/file.ts' })).toBe('读写');
       expect(classifyToolCall('apply_patch', { patch: '--- a/file.ts' })).toBe('读写');
     });
 
@@ -66,7 +67,8 @@ describe('progress-monitor-utils', () => {
   });
 
   describe('extractTargetFile', () => {
-    it('extracts file from apply_patch', () => {
+    it('extracts file from patch/apply_patch', () => {
+      expect(extractTargetFile('patch', { patch: '--- a/src/server/index.ts' })).toBe('src/server/index.ts');
       expect(extractTargetFile('apply_patch', { patch: '--- a/src/server/index.ts' })).toBe('src/server/index.ts');
     });
 
@@ -130,13 +132,13 @@ describe('progress-monitor-utils', () => {
         elapsedMs: 60000,
         toolCallHistory: [
           { toolName: 'shell.exec', params: JSON.stringify({ cmd: 'cat src/index.ts' }), success: true },
-          { toolName: 'apply_patch', params: JSON.stringify({ patch: '--- a/src/server/routes.ts' }), success: true },
+          { toolName: 'patch', params: JSON.stringify({ patch: '--- a/src/server/routes.ts' }), success: true },
           { toolName: 'shell.exec', params: JSON.stringify({ cmd: 'rg "test"' }), success: false },
         ],
       };
       const result = buildCompactSummary(data, formatElapsed);
       expect(result).toContain('✅ [读写] cat | src/index.ts');
-      expect(result).toContain('✅ [读写] apply_patch | src/server/routes.ts');
+      expect(result).toContain('✅ [读写] patch | src/server/routes.ts');
       expect(result).toContain('❌ [搜索] rg'); // parsed from shell.exec cmd
     });
 
