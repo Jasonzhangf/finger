@@ -999,7 +999,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     activeTurn.resolve(result);
 
     // 发送 ProgressUpdateEvent 到 ProgressStore（唯一真源）
-    chatCodexLog.info('resolveActiveTurn called', { sessionId: session.sessionId, hasKernelMetadata: !!result.kernelMetadata, input_tokens: result.kernelMetadata?.input_tokens });
+    chatCodexLog.info('resolveActiveTurn called', { sessionId: session.sessionId, hasKernelMetadata: !!result.kernelMetadata, input_tokens: result.kernelMetadata?.input_tokens, context_usage_percent: result.kernelMetadata?.context_usage_percent });
     if (result.kernelMetadata && session.sessionId) {
       const agentId = typeof result.kernelMetadata.contextLedgerAgentId === 'string'
         ? result.kernelMetadata.contextLedgerAgentId
