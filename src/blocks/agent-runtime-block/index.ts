@@ -9,7 +9,6 @@ import type { ResourcePool } from '../../orchestration/resource-pool.js';
 import { ResourceType } from '../../orchestration/resource-pool.js';
 
 import { buildDispatchTaskText, extractTaskText, sanitizeDispatchResult, type DispatchSummaryResult } from '../../common/agent-dispatch.js';
-import { resolveSystemDispatchPolicy } from '../../core/system-dispatch-policy.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 
 import { createDispatchEvent, type DispatchStatus } from '../../protocol/index.js';
@@ -21,7 +20,6 @@ import { AgentPathUtils } from '../../protocol/operation-types.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentRuntimeBlock');
-const SYSTEM_AGENT_ID = 'finger-system-agent';
 
 export type AgentRoleType = 'system' | 'project';
 
@@ -2208,49 +2206,6 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
   }
 
-  private isSystemDirectInjectDispatch(input: AgentDispatchRequest): boolean {
-    const policy = resolveSystemDispatchPolicy();
-    const sourceAgentId = (input.sourceAgentId || '').trim().toLowerCase();
-    if (policy.directInjectSourceAgentIds.has(sourceAgentId)) {
-      return true;
-    }
-
-    const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
-    for (const [rawKey, rawValue] of Object.entries(metadata)) {
-      if (rawValue !== true) continue;
-      const normalizedKey = rawKey.trim().toLowerCase();
-      if (policy.directInjectMetadataFlags.has(normalizedKey)) {
-        return true;
-      }
-    }
-
-    const metadataSourceRaw = metadata.source;
-    if (typeof metadataSourceRaw === 'string') {
-      const metadataSource = metadataSourceRaw.trim().toLowerCase();
-      if (policy.directInjectMetadataSources.has(metadataSource)) return true;
-    }
-
-    const deliveryModeRaw = metadata.deliveryMode;
-    if (typeof deliveryModeRaw === 'string') {
-      const deliveryMode = deliveryModeRaw.trim().toLowerCase();
-      if (policy.directInjectDeliveryModes.has(deliveryMode)) return true;
-    }
-
-    return false;
-  }
-
-  private shouldRouteSystemDispatchToMailbox(input: AgentDispatchRequest): boolean {
-    const targetAgentId = (input.targetAgentId || '').trim();
-    if (targetAgentId !== SYSTEM_AGENT_ID) return false;
-    const sourceAgentId = (input.sourceAgentId || '').trim();
-    // Self-dispatch should follow the same in-flight queue merge semantics as normal user input
-    // (chat-codex pending_input_queued), not mailbox fallback.
-    if (sourceAgentId === targetAgentId) return false;
-    const policy = resolveSystemDispatchPolicy();
-    if (!policy.routeSystemDispatchToMailboxByDefault) return false;
-    return !this.isSystemDirectInjectDispatch(input);
-  }
-
   private shouldGuaranteeBusyDispatchToMailbox(input: AgentDispatchRequest): boolean {
     const sourceAgentId = (input.sourceAgentId || '').trim();
     const targetAgentId = (input.targetAgentId || '').trim();
@@ -2443,26 +2398,6 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
     const activeCount = this.getActiveDispatchCountForLane(lane.laneKey);
     const capacity = this.resolveDispatchCapacity(target);
-
-    if (this.shouldRouteSystemDispatchToMailbox(normalizedInput)) {
-      const mailboxFallback = this.buildMailboxFallbackDispatchResult({
-        dispatchId,
-        input: normalizedInput,
-        targetAgentId: target,
-        targetModuleId,
-        assignment,
-        blocking,
-      });
-      if (mailboxFallback) {
-        log.info('[AgentRuntimeBlock] Routed system dispatch to mailbox by source policy', {
-          dispatchId,
-          laneKey: lane.laneKey,
-          sourceAgentId: normalizedInput.sourceAgentId,
-          targetAgentId: target,
-        });
-        return mailboxFallback;
-      }
-    }
 
     
     // P0 #1: Deadlock detection

@@ -80,13 +80,6 @@ export function shouldUseTransientLedgerForDispatch(input: AgentDispatchRequest)
     return { enabled: false, ...(source ? { source } : {}) };
   }
 
-  const directInject =
-    metadata.systemDirectInject === true
-    || taskMetadata.systemDirectInject === true;
-  if (directInject) {
-    return { enabled: true, ...(source ? { source } : {}) };
-  }
-
   if (source && TRANSIENT_LEDGER_SOURCE_ALLOWLIST.has(source)) {
     return { enabled: true, source };
   }
@@ -624,9 +617,7 @@ export function applySessionProgressDeliveryFromDispatch(deps: AgentRuntimeDeps,
   const isScheduledSource = source === 'clock'
     || source === 'system-heartbeat'
     || source === 'mailbox-check'
-    || source.endsWith('-cron')
-    || metadata.systemDirectInject === true
-    || taskMetadata.systemDirectInject === true;
+    || source.endsWith('-cron');
 
   const useScheduledPolicy = !!scheduledPolicy || (isScheduledSource && !!interactivePolicy);
   const resolvedPolicy = scheduledPolicy ?? interactivePolicy;

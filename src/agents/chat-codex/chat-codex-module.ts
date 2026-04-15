@@ -2836,9 +2836,6 @@ function isSystemControlTurn(metadata: Record<string, unknown> | undefined): boo
   if (parseOptionalBoolean(metadata.recoveryReplay) === true) {
     return false;
   }
-  const explicitDirect = parseOptionalBoolean(metadata.systemDirectInject);
-  if (explicitDirect === true) return true;
-
   const source = (parseOptionalString(metadata.source) ?? '').toLowerCase();
   if (source.includes('heartbeat') || source.includes('bootstrap')) return true;
 

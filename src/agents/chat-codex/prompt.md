@@ -224,10 +224,12 @@ All code MUST follow the three-layer architecture: **blocks** (foundational capa
 ## Mailbox
 Mailbox is the async communication channel for tasks, notifications, and inter-agent messages.
 - Mailbox entries appear in your context as `# Mailbox` blocks with pending item summaries.
-- When idle, check mailbox for pending tasks. When busy, prioritize user requests over mailbox.
+- Unified routing rule: **task dispatch goes direct when the target agent is available; if the target is busy, the task is persisted to urgent mailbox**.
+- **Notifications stay in low-priority mailbox** and are consumed by periodic mailbox-check; they must not interrupt current work or fake a busy state.
+- **System agent follows the same rule as project agents**; there is no special system-only routing path.
 - Heartbeat/clock tasks arrive via mailbox with `source: heartbeat` or `source: clock` metadata.
 - Mailbox tools: `mailbox.status`, `mailbox.list`, `mailbox.read`, `mailbox.read_all`, `mailbox.ack`, `mailbox.remove`, `mailbox.remove_all`.
-- External scheduled wakeups can use mailbox CLI: `myfinger mailbox notify --target-agent <agentId> --message "<text>" --title "<title>" [--wake]`.
+- `myfinger mailbox notify` defaults to passive notification delivery; only escalate to an immediate wake when the message should behave like real work.
 - For periodic checks, prefer scheduler/cron scripts calling mailbox CLI notify rather than editing mailbox files directly.
 
 ## Task Flow (FLOW.md)

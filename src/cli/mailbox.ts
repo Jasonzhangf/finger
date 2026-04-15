@@ -451,7 +451,7 @@ async function wakeAgent(options: {
       reason: 'target_busy',
       targetAgent: options.targetAgent,
       ...(runtimeState.status ? { targetStatus: runtimeState.status } : {}),
-      nextAction: 'Mailbox message preserved; target is busy so wake direct-inject was skipped.',
+      nextAction: 'Mailbox message preserved; target is busy so immediate wake was skipped.',
     };
   }
 
@@ -485,8 +485,6 @@ async function wakeAgent(options: {
         metadata: {
           role: 'system',
           source: options.source || 'mailbox-cli',
-          systemDirectInject: true,
-          deliveryMode: 'direct',
           ...(options.progressDelivery ? { progressDelivery: options.progressDelivery } : {}),
         },
       },
@@ -521,7 +519,7 @@ export function registerMailboxCommand(program: Command): void {
     .option('-s, --session-id <id>', 'Optional session id')
     .option('--progress-mode <mode>', 'Progress delivery mode: all|result_only|silent')
     .option('--progress-fields <csv>', 'Comma-separated fields: reasoning,body,status,tool,step,progress')
-    .option('--wake', 'After writing mailbox, send a direct wake message to target agent', true)
+    .option('--wake', 'After writing mailbox, send a direct wake message to target agent', false)
     .option('--no-wake', 'Only write mailbox, do not send wake message')
     .action(async (options: {
       targetAgent: string;

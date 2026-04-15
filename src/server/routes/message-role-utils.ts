@@ -15,8 +15,6 @@ export function inferInboundRole(message: unknown, sender: string): 'user' | 'sy
     if (explicitRole === 'system') return 'system';
     if (explicitRole === 'user') return 'user';
 
-    if (metadata.systemDirectInject === true) return 'system';
-
     const source = typeof metadata.source === 'string' ? metadata.source.trim().toLowerCase() : '';
     if (
       source.startsWith('system-')

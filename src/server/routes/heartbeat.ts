@@ -193,7 +193,7 @@ export function registerHeartbeatRoutes(app: Express): void {
         sourceType: 'observe',
         category: 'notification',
         priority: mapPriorityToMailboxLevel(priority),
-        deliveryPolicy: 'realtime',
+        deliveryPolicy: 'passive',
       });
 
       res.json({
@@ -202,7 +202,7 @@ export function registerHeartbeatRoutes(app: Express): void {
         messageId: appended.id,
         seq: appended.seq,
         summary: `${title} -> ${targetAgentId}`,
-        nextAction: 'Use normal queue/injection path to wake the agent if immediate handling is required.',
+        nextAction: 'Notification queued in passive mailbox; it will be consumed by the next mailbox-check cycle unless a real task dispatch explicitly wakes the agent.',
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

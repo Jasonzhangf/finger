@@ -1,4 +1,43 @@
-## 执行模式说明（重要）
+# Mailbox + 心跳任务优先级设计
+
+> **Canonical truth**：本文件是 dispatch / mailbox / notification 路由语义的唯一设计真源。`project-dispatch-operation-architecture.md` 等文档只能引用这里，不能再各自定义第二套行为。
+
+## 0. 统一路由语义（唯一正确实现）
+
+### 0.1 消息只分两类
+
+1. **Task dispatch（任务）**
+   - 目标 Agent **available / not busy** → **direct dispatch**
+   - 目标 Agent **busy** → **写入 urgent mailbox**（高优先级、可恢复）
+   - Agent 一旦恢复可执行，**urgent mailbox 必须优先于普通通知消费**
+
+2. **Notification（通知）**
+   - 永远进入 **non-urgent mailbox**
+   - 由 **周期性 mailbox-check** 消费
+   - **不打断当前工作，不制造 fake busy，不走 system special-case**
+
+### 0.2 全 Agent 同一规则
+
+- **System Agent 没有特殊路由特权**：不能因为 `target=finger-system-agent` 就默认进入 mailbox。
+- **禁止 direct inject 语义**：不允许通过“inject / 直塞系统会话”绕过统一 dispatch 规则。
+- 唯一例外仅是 **self-dispatch**：仍按同一 agent 的 in-flight / pending-input 语义处理，不走跨 agent mailbox fallback。
+
+### 0.3 唯一实现边界
+
+| 责任 | 唯一实现点 |
+|---|---|
+| direct dispatch vs busy → urgent mailbox | `src/blocks/agent-runtime-block/index.ts` |
+| urgent mailbox 持久化 payload | `src/server/modules/dispatch-queue-timeout-mailbox.ts` |
+| mailbox 周期巡检 / urgent 优先调度 | `src/server/modules/heartbeat-helpers.ts` + `src/serverx/modules/heartbeat-scheduler.impl.ts` |
+| mailbox read/ack 生命周期 | `src/server/modules/agent-runtime/mailbox.ts` + `src/blocks/mailbox-block/protocol.ts` |
+
+### 0.4 配置真源
+
+- **周期性 mailbox-check 间隔**：`~/.finger/runtime/schedules/heartbeat-config.jsonl` 中的 `global.mailboxCheckIntervalMs` / `projects.<projectId>.mailboxCheckIntervalMs`
+- **urgent mailbox** 不等待周期窗口；它依赖正常 dispatch 可用性恢复后被优先消费。
+- **notification** 默认是低优先级被动消费；如果要升级为立即执行的工作，必须改成 **task dispatch**，而不是把 notification 伪装成 urgent。
+
+## 1. 执行模式说明（重要）
 
 **本系统是 Agent-driven 异步执行模式，不是刚性 dispatch 等待模式**：
 

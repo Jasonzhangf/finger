@@ -231,7 +231,6 @@ export class PeriodicCheckRunner {
           metadata: {
             source: 'system-heartbeat',
             role: 'system',
-            systemDirectInject: true,
             deliveryMode: 'direct',
           },
           blocking: false,
@@ -282,7 +281,6 @@ export class PeriodicCheckRunner {
       metadata: {
         source: 'system-heartbeat',
         role: 'system',
-        systemDirectInject: true,
         deliveryMode: 'direct',
       },
       blocking: false,

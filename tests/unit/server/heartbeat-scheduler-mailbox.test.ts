@@ -198,6 +198,40 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     expect(secondDispatchCount).toBe(1);
   });
 
+  it('does not mark notification-only mailbox work as urgent when the agent is busy', async () => {
+    const listAgentsMock = vi.spyOn(registry, 'listAgents');
+    listAgentsMock.mockImplementation(async () => ([
+      {
+        agentId: SYSTEM_AGENT_ID,
+        status: 'busy',
+      } as any,
+    ]));
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: 'running' }] };
+      }
+      return { ok: true };
+    });
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    heartbeatMailbox.append(
+      SYSTEM_AGENT_ID,
+      { type: 'external-notification', taskId: 'notice-1', prompt: 'passive notice' },
+      { category: 'notification', priority: 2, deliveryPolicy: 'passive' as any },
+    );
+
+    (scheduler as any).lastMailboxPromptAt.set(SYSTEM_AGENT_ID, Date.now() - 6 * 60_000);
+    await (scheduler as any).promptMailboxChecks();
+
+    expect(execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch')).toHaveLength(0);
+    expect((scheduler as any).mailboxPromptDeferredByAgent.has(SYSTEM_AGENT_ID)).toBe(false);
+  });
+
   it('defers mailbox-check dispatch when registry/runtime reports busy', async () => {
     const listAgentsMock = vi.spyOn(registry, 'listAgents');
     let runtimeStatus: 'busy' | 'idle' = 'busy';

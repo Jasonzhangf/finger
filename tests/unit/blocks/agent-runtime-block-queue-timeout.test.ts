@@ -160,120 +160,7 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
     }
   });
 
-  it('routes non-direct dispatches to system agent into mailbox immediately', async () => {
-    const hubSendToModule = vi.fn().mockResolvedValue({ ok: true });
-    const onDispatchQueueTimeout = vi.fn().mockReturnValue({
-      delivery: 'mailbox',
-      mailboxMessageId: 'msg-system-mailbox-1',
-      summary: 'system mailbox route',
-    });
-
-    const block = new AgentRuntimeBlock('agent-runtime-test-system', {
-      moduleRegistry: {
-        getAllModules: () => [{
-          id: 'finger-system-agent',
-          name: 'finger-system-agent',
-          type: 'agent',
-          metadata: { role: 'system' },
-        }] as never,
-        getModule: (id: string) => (id === 'finger-system-agent'
-          ? {
-              id: 'finger-system-agent',
-              name: 'finger-system-agent',
-              type: 'agent',
-              metadata: { role: 'system' },
-            } as never
-          : null),
-      } as never,
-      hub: {
-        sendToModule: hubSendToModule,
-      } as never,
-      runtime: {
-        getAgentToolPolicy: () => ({
-          whitelist: ['agent.dispatch'],
-          blacklist: [],
-        }),
-        getAgentRuntimeConfig: () => null,
-        setAgentRuntimeConfig: vi.fn(),
-      } as never,
-      toolRegistry: {
-        list: () => [{ name: 'agent.dispatch', policy: 'allow' }],
-      } as never,
-      eventBus: {
-        emit: vi.fn().mockResolvedValue(undefined),
-      } as never,
-      workflowManager: {
-        listWorkflows: () => [],
-        pauseWorkflow: () => true,
-        resumeWorkflow: () => true,
-      },
-      sessionManager: {
-        pauseSession: () => true,
-        resumeSession: () => true,
-        getCurrentSession: () => ({ id: 'session-system' }),
-      },
-      chatCodexRunner: {
-        listSessionStates: () => [],
-        interruptSession: () => [],
-      },
-      resourcePool: {
-        getAllResources: () => [],
-        addResource: vi.fn(),
-      } as never,
-      getLoadedAgentConfigs: () => [{
-        filePath: '/tmp/finger-system-agent.agent.json',
-        config: {
-          id: 'finger-system-agent',
-          name: 'System Agent',
-          role: 'system',
-          implementations: [
-            { id: 'native-main', kind: 'native', moduleId: 'finger-system-agent', enabled: true },
-          ],
-          tools: {
-            whitelist: ['agent.dispatch'],
-          },
-        },
-      }],
-      primaryOrchestratorAgentId: 'chat-codex',
-      onDispatchQueueTimeout,
-    });
-
-    await block.initialize();
-    await block.start();
-    await block.execute('deploy', {
-      targetAgentId: 'finger-system-agent',
-      targetImplementationId: 'native-main',
-      sessionId: 'session-system',
-      instanceCount: 1,
-      launchMode: 'orchestrator',
-    });
-
-    const result = await block.execute('dispatch', {
-      sourceAgentId: 'system-heartbeat',
-      targetAgentId: 'finger-system-agent',
-      task: { text: 'mailbox-check' },
-      blocking: true,
-      metadata: { source: 'system-heartbeat' },
-    }) as {
-      ok: boolean;
-      status: string;
-      result?: { status?: string; messageId?: string };
-    };
-
-    expect(onDispatchQueueTimeout).toHaveBeenCalledWith(expect.objectContaining({
-      sourceAgentId: 'system-heartbeat',
-      targetAgentId: 'finger-system-agent',
-    }));
-    expect(result.ok).toBe(true);
-    expect(result.status).toBe('queued');
-    expect(result.result).toEqual(expect.objectContaining({
-      status: 'queued_mailbox',
-      messageId: 'msg-system-mailbox-1',
-    }));
-    expect(hubSendToModule).not.toHaveBeenCalled();
-  });
-
-  it('keeps direct-inject dispatch to system agent on the direct execution path', async () => {
+  it('dispatches to system agent directly when the system agent is available', async () => {
     const hubSendToModule = vi.fn().mockResolvedValue({ ok: true, output: 'ok' });
     const onDispatchQueueTimeout = vi.fn().mockReturnValue({
       delivery: 'mailbox',
@@ -368,8 +255,6 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
       blocking: true,
       metadata: {
         source: 'system-heartbeat',
-        systemDirectInject: true,
-        deliveryMode: 'direct',
       },
     }) as {
       ok: boolean;
@@ -381,6 +266,140 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
     expect(result.status).toBe('completed');
     expect(hubSendToModule).toHaveBeenCalledTimes(1);
     expect(onDispatchQueueTimeout).not.toHaveBeenCalled();
+  });
+
+  it('routes dispatch to system agent into urgent mailbox when the system agent is busy', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = createDeferred<{ ok: boolean }>();
+      const hubSendToModule = vi.fn()
+        .mockImplementationOnce(() => first.promise);
+      const onDispatchQueueTimeout = vi.fn().mockReturnValue({
+        delivery: 'mailbox',
+        mailboxMessageId: 'msg-system-mailbox-1',
+        summary: 'system mailbox route',
+      });
+
+      const block = new AgentRuntimeBlock('agent-runtime-test-system', {
+        moduleRegistry: {
+          getAllModules: () => [{
+            id: 'finger-system-agent',
+            name: 'finger-system-agent',
+            type: 'agent',
+            metadata: { role: 'system' },
+          }] as never,
+          getModule: (id: string) => (id === 'finger-system-agent'
+            ? {
+                id: 'finger-system-agent',
+                name: 'finger-system-agent',
+                type: 'agent',
+                metadata: { role: 'system' },
+              } as never
+            : null),
+        } as never,
+        hub: {
+          sendToModule: hubSendToModule,
+        } as never,
+        runtime: {
+          getAgentToolPolicy: () => ({
+            whitelist: ['agent.dispatch'],
+            blacklist: [],
+          }),
+          getAgentRuntimeConfig: () => null,
+          setAgentRuntimeConfig: vi.fn(),
+        } as never,
+        toolRegistry: {
+          list: () => [{ name: 'agent.dispatch', policy: 'allow' }],
+        } as never,
+        eventBus: {
+          emit: vi.fn().mockResolvedValue(undefined),
+        } as never,
+        workflowManager: {
+          listWorkflows: () => [],
+          pauseWorkflow: () => true,
+          resumeWorkflow: () => true,
+        },
+        sessionManager: {
+          pauseSession: () => true,
+          resumeSession: () => true,
+          getCurrentSession: () => ({ id: 'session-system' }),
+        },
+        chatCodexRunner: {
+          listSessionStates: () => [],
+          interruptSession: () => [],
+        },
+        resourcePool: {
+          getAllResources: () => [],
+          addResource: vi.fn(),
+        } as never,
+        getLoadedAgentConfigs: () => [{
+          filePath: '/tmp/finger-system-agent.agent.json',
+          config: {
+            id: 'finger-system-agent',
+            name: 'System Agent',
+            role: 'system',
+            implementations: [
+              { id: 'native-main', kind: 'native', moduleId: 'finger-system-agent', enabled: true },
+            ],
+            tools: {
+              whitelist: ['agent.dispatch'],
+            },
+          },
+        }],
+        primaryOrchestratorAgentId: 'chat-codex',
+        onDispatchQueueTimeout,
+      });
+
+      await block.initialize();
+      await block.start();
+      await block.execute('deploy', {
+        targetAgentId: 'finger-system-agent',
+        targetImplementationId: 'native-main',
+        sessionId: 'session-system',
+        instanceCount: 1,
+        launchMode: 'orchestrator',
+      });
+
+      await block.execute('dispatch', {
+        sourceAgentId: 'system-heartbeat',
+        targetAgentId: 'finger-system-agent',
+        task: { text: 'occupy-system-agent' },
+        blocking: false,
+      });
+
+      const resultPromise = block.execute('dispatch', {
+        sourceAgentId: 'system-heartbeat',
+        targetAgentId: 'finger-system-agent',
+        task: { text: 'mailbox-check' },
+        blocking: true,
+        queueOnBusy: true,
+        maxQueueWaitMs: 1_000,
+        metadata: { source: 'system-heartbeat' },
+      }) as Promise<{
+        ok: boolean;
+        status: string;
+        result?: { status?: string; messageId?: string };
+      }>;
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = await resultPromise;
+
+      expect(onDispatchQueueTimeout).toHaveBeenCalledWith(expect.objectContaining({
+        sourceAgentId: 'system-heartbeat',
+        targetAgentId: 'finger-system-agent',
+      }));
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe('queued');
+      expect(result.result).toEqual(expect.objectContaining({
+        status: 'queued_mailbox',
+        messageId: 'msg-system-mailbox-1',
+      }));
+      expect(hubSendToModule).toHaveBeenCalledTimes(1);
+
+      first.resolve({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects self-dispatch instead of routing/queuing', async () => {

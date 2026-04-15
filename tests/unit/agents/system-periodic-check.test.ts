@@ -71,8 +71,11 @@ describe('PeriodicCheckRunner', () => {
       blocking: false,
       metadata: expect.objectContaining({
         source: 'system-heartbeat',
+        role: 'system',
         deliveryMode: 'direct',
       }),
     }));
+    const payload = dispatchMock.mock.calls[0]?.[0] as { metadata?: Record<string, unknown> } | undefined;
+    expect(payload?.metadata?.systemDirectInject).toBeUndefined();
   });
 });

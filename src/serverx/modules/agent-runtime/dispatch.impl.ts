@@ -217,8 +217,6 @@ async function buildGuaranteedQueuedDispatchResultWithMailbox(
           source: 'mailbox-check',
           sourceType: 'mailbox',
           role: 'system',
-          systemDirectInject: true,
-          deliveryMode: 'direct',
           mailboxMessageId: fallback.mailboxMessageId,
           mailboxPriority: 0,
           mailboxHighPriority: true,

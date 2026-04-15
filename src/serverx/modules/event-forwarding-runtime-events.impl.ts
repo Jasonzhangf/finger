@@ -467,7 +467,6 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
           metadata: {
             role: 'system',
             source: 'review-gate',
-            systemDirectInject: true,
             parentDispatchId: dispatchId,
             reviewGate: true,
           },
@@ -545,7 +544,6 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
           metadata: {
             role: 'system',
             source: 'review-gate-redispatch',
-            systemDirectInject: true,
             parentDispatchId: dispatchId,
             reviewDecision: decision ?? 'retry',
             reviewGate: true,

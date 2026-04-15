@@ -25,6 +25,8 @@
 
 ## 2. 新架构核心原则
 
+> **路由约束**：运行时 `direct dispatch / urgent mailbox / notification mailbox` 的判定只允许由 `docs/design/mailbox-heartbeat-priority.md` 定义；本文档只描述 Operation / BD / Registry 的协作，不再重复定义 mailbox 路由细节。
+
 - **任务管理**：Operation（指令）驱动 + BD（持久化真源）
 - **状态可见**：Registry（状态中心）实时同步，直接读，不用问
 - **沟通交互**：Chat（消息通道），用于询问和调试，不改变任务状态

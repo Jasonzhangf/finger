@@ -149,6 +149,13 @@ export function performMailboxPingDryRun(
  * 
  * @param ctx - Mailbox check 上下文
  */
+function isUrgentMailboxMessage(message: { category?: string; deliveryPolicy?: string }): boolean {
+  if ((message.category ?? '').trim().toLowerCase() === 'notification') return false;
+  const deliveryPolicy = (message.deliveryPolicy ?? '').trim().toLowerCase();
+  if (deliveryPolicy === 'passive') return false;
+  return true;
+}
+
 export async function promptMailboxChecks(
   ctx: MailboxCheckContext,
 ): Promise<void> {
@@ -179,14 +186,16 @@ export async function promptMailboxChecks(
     const due = now - lastPrompt >= mailboxCheckIntervalMs;
 
     const pendingAll = heartbeatMailbox.listPending(agent.agentId) ?? [];
+    const urgentPendingAll = pendingAll.filter((message) => isUrgentMailboxMessage(message));
 
-    if (agent.status === 'busy' && due && pendingAll.length > 0) {
-      // Registry-level busy can be stale. Mark deferred, but still allow
-      // dispatchDirect to decide via runtime_view / queue behavior.
+    if (agent.status === 'busy' && due && urgentPendingAll.length > 0) {
+      // Only actionable task-like mailbox entries should bypass the normal interval
+      // once the target becomes available again. Passive notifications stay periodic.
       ctx.mailboxPromptDeferredByAgent.add(agent.agentId);
-      log.debug('[HeartbeatScheduler] Agent marked busy by registry; allow mailbox-check dispatch decision', {
+      log.debug('[HeartbeatScheduler] Agent marked busy by registry; urgent mailbox work deferred until available', {
         agentId: agent.agentId,
         status: agent.status,
+        urgentPendingCount: urgentPendingAll.length,
       });
     }
 
@@ -208,10 +217,11 @@ export async function promptMailboxChecks(
       continue;
     }
 
-    // Keep notifications actionable at idle time (news/email/channel notices),
-    // only auto-clean dispatch-result notifications above.
     const pending = pendingSnapshot;
-    const deferredNotificationCount = 0;
+    const urgentPending = pending.filter((message) => isUrgentMailboxMessage(message));
+    if (urgentPending.length === 0) {
+      ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
+    }
 
     const progressPolicies = pending
       .map((msg) => {
@@ -286,8 +296,10 @@ export async function promptMailboxChecks(
     if (dispatched) {
       ctx.lastMailboxPromptAt.set(agent.agentId, now);
       ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
-    } else {
+    } else if (urgentPending.length > 0) {
       ctx.mailboxPromptDeferredByAgent.add(agent.agentId);
+    } else {
+      ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
     }
   }
 }

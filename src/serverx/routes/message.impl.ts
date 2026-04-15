@@ -101,7 +101,6 @@ function shouldUseTransientLedgerForInboundMessage(message: unknown): {
   const explicit = parseBooleanFlag(metadata.transientLedger ?? metadata.transient_ledger);
   if (explicit === true) return { enabled: true, ...(source ? { source } : {}) };
   if (explicit === false) return { enabled: false, ...(source ? { source } : {}) };
-  if (metadata.systemDirectInject === true) return { enabled: true, ...(source ? { source } : {}) };
   if (source && TRANSIENT_LEDGER_SOURCE_ALLOWLIST.has(source)) {
     return { enabled: true, source };
   }

@@ -2234,8 +2234,6 @@ constructor(private deps: AgentRuntimeDeps) {}
           source: 'system-heartbeat',
           sourceType: 'heartbeat',
           role: 'system',
-          systemDirectInject: true,
-          deliveryMode: 'direct',
           taskId,
           projectId,
           ...(resolvedProgressDelivery ? { scheduledProgressDelivery: resolvedProgressDelivery } : {}),
