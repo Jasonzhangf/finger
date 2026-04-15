@@ -45,6 +45,19 @@ describe('Periodic Check Runtime', () => {
               agents: [
                 { id: 'finger-system-agent', status: 'idle' },
               ],
+              instances: [
+                {
+                  id: 'deployment-system-1',
+                  agentId: 'finger-system-agent',
+                  name: 'System Agent',
+                  type: 'system',
+                  status: 'idle',
+                  sessionId: 'hb-session-finger-system-agent-test-finger-project',
+                  source: 'deployment',
+                  deploymentId: 'deployment-system-1',
+                  createdAt: new Date().toISOString(),
+                },
+              ],
             };
           }
           
@@ -57,6 +70,8 @@ describe('Periodic Check Runtime', () => {
       },
       sessionManager: {
         getCurrentSession: () => ({ id: 'test-session' }),
+        getSession: () => ({ id: 'test-session' }),
+        getOrCreateSystemSession: () => ({ id: 'test-session' }),
         list: () => [],
         ensureSession: () => {},
       },

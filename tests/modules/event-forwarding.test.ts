@@ -346,7 +346,7 @@ describe('Event Forwarding - Reasoning Handling', () => {
       payload: {
         id: 'evt-owner-agent-1',
         type: 'model_round',
-        contextUsagePercent: 45,
+        contextUsagePercent: 92,
         responseId: 'resp-owner-agent',
       },
     });

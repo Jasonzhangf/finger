@@ -38,7 +38,20 @@ describe('PeriodicCheckRunner', () => {
       agentRuntimeBlock: {
         execute: async (command: string, payload?: Record<string, unknown>) => {
           if (command === 'runtime_view') {
-            return { agents: [{ id: 'agent-1', status: 'idle' }] };
+            return {
+              agents: [{ id: 'agent-1', status: 'idle' }],
+              instances: [{
+                id: 'deployment-agent-1',
+                agentId: 'agent-1',
+                name: 'Agent 1',
+                type: 'project',
+                status: 'idle',
+                sessionId: 'hb-session-agent-1-tmp-proj-1',
+                source: 'deployment',
+                deploymentId: 'deployment-agent-1',
+                createdAt: new Date().toISOString(),
+              }],
+            };
           }
           if (command === 'dispatch') {
             dispatchMock(payload);

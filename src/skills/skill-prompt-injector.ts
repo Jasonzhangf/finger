@@ -18,8 +18,12 @@ const skillsManager = getGlobalSkillsManager();
 function renderSkillsPrompt(skills: Array<{ name: string; description: string; path: string }>): string {
   if (skills.length === 0) return '';
 
-  const lines: string[] = [];
-  // 只保留 skills 列表，规范说明在 system_prompt 里已有
+  const lines: string[] = [
+    'Skills are workflows, not the canonical history store.',
+    'If prior facts or execution evidence are needed, retrieve them via `context_ledger.memory` instead of guessing.',
+    'The absence from prompt does not prove the event never happened.',
+    '',
+  ];
   for (const skill of skills) {
     const desc = skill.description?.trim().length > 0 ? skill.description.trim() : 'No description provided.';
     lines.push(`- ${skill.name}: ${desc} (file: ${skill.path}/SKILL.md)`);
