@@ -19,6 +19,7 @@ export interface BuildCompactSummaryOptions {
   includeTask?: boolean;
   includeReasoning?: boolean;
   headerMode?: 'full' | 'minimal';
+  contextPendingHint?: boolean;
 }
 
 type ToolHistoryEntry = SessionProgressData['toolCallHistory'][number];
@@ -240,6 +241,7 @@ export function buildCompactSummary(
   const includeTask = options?.includeTask ?? true;
   const includeReasoning = options?.includeReasoning ?? true;
   const headerMode = options?.headerMode ?? 'full';
+  const contextPendingHint = options?.contextPendingHint === true;
   void formatElapsed;
   const now = new Date();
   const localTime = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
@@ -269,7 +271,9 @@ export function buildCompactSummary(
     if (fallbackContextLine) {
       lines.push(fallbackContextLine);
     } else {
-      lines.push('🧠 上下文: 启动中');
+      lines.push(contextPendingHint
+        ? '🧠 上下文: 工具执行阶段，等待模型回传上下文统计'
+        : '🧠 上下文: 启动中');
     }
   }
   const estimatedContextTokens = resolveEstimatedContextTokens(

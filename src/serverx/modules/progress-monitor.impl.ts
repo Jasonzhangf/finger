@@ -301,21 +301,28 @@ export class ProgressMonitor {
       .join('；');
   }
 
-  private recordRoundDigest(progress: SessionProgress, tools: ToolCallRecord[]): void {
+  private createRoundDigest(
+    progress: SessionProgress,
+    tools: ToolCallRecord[],
+    timestamp = Date.now(),
+  ): ProgressRoundDigest | undefined {
     if (!Array.isArray(tools) || tools.length === 0) return;
     const items = tools.map((tool) => this.summarizeRoundTool(tool));
     const successCount = tools.filter((tool) => tool.success === true).length;
     const failureCount = tools.filter((tool) => tool.success === false).length;
     const seq = (progress.progressRoundSeq ?? 0) + 1;
-    progress.progressRoundSeq = seq;
-    const digest: ProgressRoundDigest = {
+    return {
       seq,
-      timestamp: Date.now(),
+      timestamp,
       successCount,
       failureCount,
       summary: this.buildRoundSummary(items),
       items: items.slice(0, 8),
     };
+  }
+
+  private appendRoundDigest(progress: SessionProgress, digest: ProgressRoundDigest): void {
+    progress.progressRoundSeq = digest.seq;
     const rounds = Array.isArray(progress.recentRounds) ? [...progress.recentRounds] : [];
     rounds.push(digest);
     if (rounds.length > ProgressMonitor.MAX_RECENT_ROUNDS) {
@@ -324,8 +331,11 @@ export class ProgressMonitor {
     progress.recentRounds = rounds;
   }
 
-  private buildRecentRoundsSection(progress: SessionProgress): string[] {
-    const rounds = Array.isArray(progress.recentRounds) ? progress.recentRounds : [];
+  private buildRecentRoundsSection(progress: SessionProgress, previewDigest?: ProgressRoundDigest): string[] {
+    const rounds = Array.isArray(progress.recentRounds) ? [...progress.recentRounds] : [];
+    if (previewDigest) {
+      rounds.push(previewDigest);
+    }
     if (rounds.length === 0) return [];
     const lines: string[] = ['🕘 最近轮次:'];
     
@@ -1136,27 +1146,31 @@ export class ProgressMonitor {
       }
 
       const reportToolCalls = meaningfulToolCalls.length > 0 ? meaningfulToolCalls : completedToolCalls.slice(-1);
-     const report: ProgressReport = {
-       type: 'progress_report',
-       timestamp: new Date().toISOString(),
-       sessionId: p.sessionId,
-       agentId: p.agentId,
-       progress: p,
-       summary: this.buildSingleProgressSummary(
-         p,
-         reportToolCalls,
-         contextEventChanged,
-         now,
-         waitLayerInfo,
-       ),
-       teamStatus,
-     };
+      const previewRoundDigest = meaningfulToolCalls.length > 0
+        ? this.createRoundDigest(p, meaningfulToolCalls, now)
+        : undefined;
+      const report: ProgressReport = {
+        type: 'progress_report',
+        timestamp: new Date().toISOString(),
+        sessionId: p.sessionId,
+        agentId: p.agentId,
+        progress: p,
+        summary: this.buildSingleProgressSummary(
+          p,
+          reportToolCalls,
+          contextEventChanged,
+          now,
+          waitLayerInfo,
+          previewRoundDigest,
+        ),
+        teamStatus,
+      };
 
       const delivered = await this.deliverProgressReport(report);
       if (!delivered) continue;
       // recordRoundDigest 只记录高价值工具（meaningful），不记录 cat/ls 等低价值命令
-      if (meaningfulToolCalls.length > 0) {
-        this.recordRoundDigest(p, meaningfulToolCalls);
+      if (previewRoundDigest) {
+        this.appendRoundDigest(p, previewRoundDigest);
       }
 
       // Move dedup cursor only after report delivery succeeds.
@@ -1189,6 +1203,7 @@ export class ProgressMonitor {
       lifecycleDetail?: string;
       lifecycleAgeMs?: number;
     },
+    previewRoundDigest?: ProgressRoundDigest,
   ): string {
     const toolsToShow = (newToolCalls && newToolCalls.length > 0) ? newToolCalls : [];
     const firstReport = !p.lastReportTime;
@@ -1227,6 +1242,11 @@ export class ProgressMonitor {
         includeTask: firstReport || currentTaskChanged || includeTaskFallback,
         includeReasoning: firstReport || reasoningChanged,
         headerMode: 'minimal',
+        contextPendingHint:
+          toolsToShow.length > 0
+          && data.contextBreakdown === undefined
+          && data.contextUsagePercent === undefined
+          && data.estimatedTokensInContextWindow === undefined,
       },
     );
     const inferredStalled = Math.max(0, now - p.lastUpdateTime) >= this.config.intervalMs;
@@ -1240,7 +1260,7 @@ export class ProgressMonitor {
         now,
       ),
     );
-    const roundLines = this.buildRecentRoundsSection(p);
+    const roundLines = this.buildRecentRoundsSection(p, previewRoundDigest);
     return [summary, ...stateLines, ...roundLines].join('\n');
   }
 

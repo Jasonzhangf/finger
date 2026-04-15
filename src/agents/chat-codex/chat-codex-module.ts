@@ -970,8 +970,33 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       hasModelContextWindow: typeof parsed.msg.model_context_window === 'number',
       modelContextWindow: parsed.msg.model_context_window,
       hasMetadataJson: typeof parsed.msg.metadata_json === 'string' && parsed.msg.metadata_json.length > 0,
-      msgKeys: Object.keys(parsed.msg).join(','),
-    });
+     msgKeys: Object.keys(parsed.msg).join(','),
+   });
+    // 仅在 top-level 未携带 context 统计、但 metadata_json 中存在 fallback 统计时输出诊断。
+    if (parsed.msg.metadata_json) {
+      try {
+        const meta = JSON.parse(parsed.msg.metadata_json);
+        const msgHasTopLevelContextStats =
+          typeof parsed.msg.context_usage_percent === 'number'
+          || typeof parsed.msg.estimated_tokens_in_context_window === 'number'
+          || typeof parsed.msg.model_context_window === 'number';
+        const metadataHasFallbackContextStats =
+          typeof meta.context_usage_percent === 'number'
+          || typeof meta.estimated_tokens_in_context_window === 'number'
+          || typeof meta.context_window === 'number';
+        if (!msgHasTopLevelContextStats && metadataHasFallbackContextStats) {
+          chatCodexLog.debug('task_complete metadata_json fallback stats detected', {
+            metaKeys: Object.keys(meta).join(','),
+            context_usage_percent: meta.context_usage_percent,
+            estimated_tokens: meta.estimated_tokens_in_context_window,
+            input_tokens: meta.input_tokens,
+            output_tokens: meta.output_tokens,
+            total_tokens: meta.total_tokens,
+            context_window: meta.context_window,
+          });
+        }
+      } catch {}
+    }
 
     if (parsed.msg.last_agent_message && parsed.msg.last_agent_message.trim().length > 0) {
       activeTurn.replyText = parsed.msg.last_agent_message;
