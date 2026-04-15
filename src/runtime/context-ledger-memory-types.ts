@@ -17,7 +17,7 @@ export interface ContextLedgerMemoryRuntimeContext {
   can_read_all?: boolean;
   readable_agents?: string[];
   focus_max_chars?: number;
-  context_builder?: {
+  context_history?: {
     working_set_block_ids?: string[];
     historical_block_ids?: string[];
     ranking_ids?: string[];

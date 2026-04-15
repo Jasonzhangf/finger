@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { contextBuilderRebuildTool } from '../../../../src/tools/internal/context-builder-rebuild-tool.js';
+import { contextHistoryRebuildTool } from '../../../../src/tools/internal/context-history-rebuild-tool.js';
 
 function writeLedger(rootDir: string): { sessionId: string; agentId: string } {
   const sessionId = `ctx-rebuild-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -39,13 +39,13 @@ function writeLedger(rootDir: string): { sessionId: string; agentId: string } {
   return { sessionId, agentId };
 }
 
-describe('context_builder.rebuild tool', () => {
+describe('context_history.rebuild tool', () => {
   it('rebuilds context through the single context-history executor and returns rebuilt messages', async () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'finger-context-rebuild-tool-'));
     const { sessionId, agentId } = writeLedger(rootDir);
 
     try {
-      const result = await contextBuilderRebuildTool.execute(
+      const result = await contextHistoryRebuildTool.execute(
         {
           session_id: sessionId,
           agent_id: agentId,
@@ -93,7 +93,7 @@ describe('context_builder.rebuild tool', () => {
     const { sessionId, agentId } = writeLedger(rootDir);
 
     try {
-      const result = await contextBuilderRebuildTool.execute(
+      const result = await contextHistoryRebuildTool.execute(
         {
           session_id: sessionId,
           agent_id: agentId,

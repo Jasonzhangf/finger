@@ -9,7 +9,7 @@ function extractSessionIdFromInput(toolName: string, input: unknown): string | u
   // Do not infer runtime execution session from generic tool arguments like input.session_id.
   // Many tools use session_id as a domain argument (e.g. agent.control status target),
   // and binding runtime session from those fields causes cross-session drift.
-  if (toolName !== 'context_builder.rebuild') return undefined;
+  if (toolName !== 'context_history.rebuild') return undefined;
 
   const runtimeContext = isObjectRecord(input._runtime_context) ? input._runtime_context : undefined;
   if (runtimeContext) {

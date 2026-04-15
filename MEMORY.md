@@ -167,3 +167,52 @@
 - source_session: hb-session-finger-project-agent-finger-main
 - source_turn: turn-1776223212198
 - long_term: 指定时间范围与 ledger 实际时间戳需交叉验证
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776230225012|hook.project.memory.update
+- updated_at: 2026-04-15T05:17:05.164Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776230225012
+- long_term: Mailbox message IDs may be stale/expired when heartbeat tasks arrive. Always verify existence before claiming completion.
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776233503378|hook.project.memory.update
+- updated_at: 2026-04-15T06:11:43.526Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776233503378
+- long_term: ledger_sparse_report_factual_findings_without_fabrication
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776233567400|hook.project.memory.update
+- updated_at: 2026-04-15T06:12:47.581Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776233567400
+- long_term: mailbox messages may be auto-cleaned or consumed in previous turns
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776233624271|hook.project.memory.update
+- updated_at: 2026-04-15T06:13:44.398Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776233624271
+- long_term: Mailbox message IDs may be stale when enqueued from previous turns - always verify current mailbox state
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776234307394|hook.project.memory.update
+- updated_at: 2026-04-15T06:25:07.481Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776234307394
+- long_term: Mailbox task injection should validate message existence before triggering continuation
+
+### 2026-04-15: Finger local skill 必须保持轻量单真源
+
+**问题**：`.agents/skills/finger-dev-skills/SKILL.md` 演变成 handbook，重复 AGENTS 与设计文档，并残留过期路径/旧名。
+
+**收口**：
+- Skill 只保留：层级归属、唯一真源定位、最小验证矩阵、repo 特有高价值反模式
+- `AGENTS.md` 继续作为硬护栏真源
+- `docs/design/*.md` 继续作为子系统设计真源
+
+**规则**：
+- 本地 skill 必须是 execution adapter，不得扩张成 handbook
+- 不得在 skill 中保存易过期静态事实（计数、临时路径、旧命名）
+- context-history 对外唯一名保持 `context_history.rebuild`

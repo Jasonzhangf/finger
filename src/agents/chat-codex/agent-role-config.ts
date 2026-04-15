@@ -10,7 +10,7 @@ const CORE_EXECUTION_TOOLS = [
   'update_plan',
   'context_ledger.memory',
   'context_ledger.expand_task',
-  'context_builder.rebuild',
+  'context_history.rebuild',
   'reasoning.stop',
   'clock',
   'command.exec',
@@ -39,7 +39,7 @@ const READ_ONLY_COORDINATION_TOOLS = [
   'update_plan',
   'context_ledger.memory',
   'context_ledger.expand_task',
-  'context_builder.rebuild',
+  'context_history.rebuild',
   'clock',
   'command.exec',
 ] as const;

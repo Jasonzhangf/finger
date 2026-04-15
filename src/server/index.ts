@@ -224,7 +224,7 @@ setEarlyAutoCompactHandler((event) => {
 });
 
 // IMPORTANT:
-// Context rebuild remains explicit (context_builder.rebuild), or one-time bootstrap
+// Context rebuild remains explicit (context_history.rebuild), or one-time bootstrap
 // on truly empty history only.
 // Separately, runtime auto-compaction is enabled when context usage crosses threshold
 // to avoid hard-overflow stalls during long turns.
@@ -297,7 +297,6 @@ await registerFingerRoleModules({
   toolRegistry: globalToolRegistry,
   chatCodexRunner,
   daemonUrl: `http://127.0.0.1:${PORT}`,
-  resolveSessionLedgerRoot: (session) => sharedSessionManager.resolveLedgerRootForSession(session.id) || undefined,
   onLoopEvent: (event) => {
     appendSessionLoopLog(event);
     emitLoopEventToEventBus(event);

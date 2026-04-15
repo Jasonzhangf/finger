@@ -534,9 +534,9 @@ export function handleToolResultEvent(
     const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
     progress.currentTask = `${resolved} → ✅`;
   }
-  if (event.toolName === 'context_builder.rebuild') {
+  if (event.toolName === 'context_history.rebuild') {
     progress.allowContextDropOnce = true;
-    setContextEvent(progress, '手动执行 context_builder.rebuild，准备重组历史上下文');
+    setContextEvent(progress, '手动执行 context_history.rebuild，准备重组历史上下文');
   } else if (event.toolName === 'context_ledger.expand_task') {
     setContextEvent(progress, '扩展任务摘要为全文片段，补充当前上下文细节');
   }

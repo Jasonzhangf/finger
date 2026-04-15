@@ -795,7 +795,7 @@ describe('context-ledger-memory', () => {
         session_id: setup.sessionId,
         agent_id: setup.agentId,
         mode: setup.mode,
-        context_builder: {
+        context_history: {
           historical_block_ids: ['task-should-not-match'],
           working_set_block_ids: ['task-should-not-match-either'],
         },

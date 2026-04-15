@@ -821,17 +821,17 @@ describe('chat-codex module', () => {
       'orchestrator',
     );
 
-    expect(instructions).toContain('Current prompt history is a budgeted dynamic view, not the full ledger.');
-    expect(instructions).toContain('working_set contains the active task block at higher fidelity; historical_memory contains relevance-selected prior blocks.');
-    expect(instructions).toContain('When historical context is missing, first call `context_ledger.memory` with action="search"');
-    expect(instructions).toContain('Do not guess hidden history; retrieve evidence from ledger first.');
+    expect(instructions).toContain('[context_ledger]');
+    expect(instructions).toContain('enabled=true');
+    expect(instructions).toContain('agent_id=finger-system-agent');
+    expect(instructions).toContain('role=orchestrator');
     expect(instructions).toContain('working_set_task_blocks=1');
     expect(instructions).toContain('historical_task_blocks=2');
     expect(instructions).toContain('working_set_tokens=500');
     expect(instructions).toContain('historical_tokens=1500');
   });
 
-  it('injects continuity anchors into developer instructions so model can judge whether rebuild is needed', () => {
+  it('exposes current prompt optimization runtime for context-history turns', () => {
     const options = __chatCodexInternals.buildKernelUserTurnOptions(
       {
         sessionId: 'session-1',
@@ -846,18 +846,15 @@ describe('chat-codex module', () => {
           roleProfile: 'system',
           kernelMode: 'main',
           contextLedgerEnabled: true,
-          contextHistorySource: 'context_builder_indexed',
+          contextHistorySource: 'context_history_single_source',
         },
       },
       undefined,
     );
 
     const instructions = options?.developer_instructions ?? '';
-    expect(instructions).toContain('[conversation_continuity]');
-    expect(instructions).toContain('history_source=context_builder_indexed');
-    expect(instructions).toContain('recent_task_turns=');
-    expect(instructions).toContain('recent_user_inputs=');
-    expect(instructions).toContain('If the current request is clearly discontinuous with these anchors');
+    expect(instructions).toContain('# Prompt Optimization Runtime');
+    expect(instructions).toContain('role=system');
   });
 
   it('grants project agent full tool access', async () => {
@@ -943,7 +940,7 @@ describe('chat-codex module', () => {
     expect(options?.responses?.text?.output_schema).toEqual(explicitSchema);
   });
 
-  it('loads Global+Local FLOW in order with per-file hard 10k truncation', () => {
+  it('loads Global+Local FLOW paths and full content into system prompt', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'finger-flow-test-'));
     const globalFlowPath = join(tempDir, 'FLOW.global.md');
     const localFlowPath = join(tempDir, 'FLOW.local.md');
@@ -969,10 +966,6 @@ describe('chat-codex module', () => {
       );
 
       const instructions = options?.developer_instructions ?? '';
-      expect(instructions).toContain('# Task Flow Runtime');
-      expect(instructions).toContain('Load order is fixed: Global first, Local second.');
-      expect(instructions).toContain('Conflict rule: Local FLOW has higher priority than Global FLOW.');
-      expect(instructions).toContain('...[TRUNCATED_AT_10000_CHARS]');
       expect(instructions).toContain(`FLOW.global.path=${globalFlowPath}`);
       expect(instructions).toContain(`FLOW.local.path=${localFlowPath}`);
       const globalHeaderIndex = instructions.indexOf('FLOW.content.global:');
@@ -984,10 +977,8 @@ describe('chat-codex module', () => {
       expect(fencedBlocks.length).toBe(2);
       expect(fencedBlocks[0]?.startsWith('GLOBAL')).toBe(true);
       expect(fencedBlocks[1]?.startsWith('LOCAL')).toBe(true);
-      expect(fencedBlocks[0]).toContain('...[TRUNCATED_AT_10000_CHARS]');
-      expect(fencedBlocks[1]).toContain('...[TRUNCATED_AT_10000_CHARS]');
-      expect(fencedBlocks[0]).not.toContain('GLOBAL_END');
-      expect(fencedBlocks[1]).not.toContain('LOCAL_END');
+      expect(fencedBlocks[0]).toContain('GLOBAL_END');
+      expect(fencedBlocks[1]).toContain('LOCAL_END');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1008,7 +999,8 @@ describe('chat-codex module', () => {
       undefined,
     );
 
-    expect(options?.developer_instructions ?? '').not.toContain('# Task Flow Runtime');
+    expect(options?.developer_instructions ?? '').not.toContain('FLOW.global.path=');
+    expect(options?.developer_instructions ?? '').not.toContain('FLOW.local.path=');
   });
 
   it('injects project-scoped AGENTS runtime block with directory precedence', () => {
@@ -1041,7 +1033,6 @@ describe('chat-codex module', () => {
       );
 
       const instructions = options?.developer_instructions ?? '';
-      expect(instructions).toContain('# Project AGENTS Runtime (scope-aware)');
       expect(instructions).toContain(`AGENTS.project_root=${projectRoot}`);
       expect(instructions).toContain(rootAgentsPath);
       expect(instructions).toContain(nestedAgentsPath);
@@ -1090,7 +1081,6 @@ describe('chat-codex module', () => {
       );
 
       const instructions = options?.developer_instructions ?? '';
-      expect(instructions).toContain('## Skills');
       expect(instructions).toContain('project-debug-skill: Project local debug workflow');
       expect(instructions).toContain(`${projectRoot}/.codex/skills/project-debug-skill/SKILL.md`);
     } finally {
@@ -1133,7 +1123,7 @@ describe('chat-codex module', () => {
           metadata: {
             ...baseContext.metadata,
             contextHistorySource: 'raw_session',
-            contextBuilderBypassed: true,
+            contextHistoryBypassed: true,
           },
         },
         undefined,
@@ -1148,8 +1138,8 @@ describe('chat-codex module', () => {
           ],
           metadata: {
             ...baseContext.metadata,
-            contextHistorySource: 'context_builder_on_demand',
-            contextBuilderRebuilt: true,
+            contextHistorySource: 'context_history_single_source',
+            contextHistoryRebuilt: true,
           },
         },
         undefined,
@@ -1159,20 +1149,19 @@ describe('chat-codex module', () => {
       const rebuiltInstructions = rebuiltOptions?.developer_instructions ?? '';
 
       const requiredMarkers = [
-        '# Task Flow Runtime',
-        '# Mailbox Runtime',
         `FLOW.global.path=${globalFlowPath}`,
         `FLOW.local.path=${localFlowPath}`,
         'GLOBAL_FLOW_STABILITY_MARKER',
         'LOCAL_FLOW_STABILITY_MARKER',
+        'MAILBOX.currentSeq=12',
+        'MAILBOX.unread=0',
       ];
       for (const marker of requiredMarkers) {
         expect(rawInstructions).toContain(marker);
         expect(rebuiltInstructions).toContain(marker);
       }
 
-      const skillsHeader = '## Skills';
-      expect(rawInstructions.includes(skillsHeader)).toBe(rebuiltInstructions.includes(skillsHeader));
+      expect(rawInstructions.includes('FLOW.content.global:')).toBe(rebuiltInstructions.includes('FLOW.content.global:'));
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1198,8 +1187,8 @@ describe('chat-codex module', () => {
           role: 'user',
           source: 'channel',
           kernelMode: 'main',
-          contextHistorySource: 'context_builder_indexed',
-          contextBuilderRebuilt: false,
+          contextHistorySource: 'context_history_single_source',
+          contextHistoryRebuilt: false,
           kernelApiHistory: metadataHistory,
         },
       },
@@ -1229,8 +1218,8 @@ describe('chat-codex module', () => {
           source: 'channel',
           kernelMode: 'main',
           contextHistorySource: 'raw_session',
-          contextBuilderBypassed: true,
-          contextBuilderBypassReason: 'on_demand_not_requested',
+          contextHistoryBypassed: true,
+          contextHistoryBypassReason: 'single_source_runtime_snapshot',
           kernelApiHistory: metadataHistory,
         },
       },

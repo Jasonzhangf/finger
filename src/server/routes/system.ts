@@ -5,7 +5,7 @@ import type { BlockRegistry } from '../../core/registry.js';
 import {
   loadUserSettings,
   saveUserSettings,
-  type ContextBuilderSettings,
+  type ContextHistorySettings,
 } from '../../core/user-settings.js';
 
 export interface SystemRouteDeps {
@@ -104,12 +104,12 @@ export function registerSystemRoutes(app: Express, deps: SystemRouteDeps): void 
     }
   });
 
-  app.get('/api/v1/context-builder/settings', (_req, res) => {
+  app.get('/api/v1/context-history/settings', (_req, res) => {
     try {
       const settings = loadUserSettings();
       res.json({
         success: true,
-        settings: settings.contextBuilder,
+        settings: settings.contextHistory,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -117,8 +117,8 @@ export function registerSystemRoutes(app: Express, deps: SystemRouteDeps): void 
     }
   });
 
-  app.put('/api/v1/context-builder/settings', (req, res) => {
-    const body = req.body as { settings?: Partial<ContextBuilderSettings> };
+  app.put('/api/v1/context-history/settings', (req, res) => {
+    const body = req.body as { settings?: Partial<ContextHistorySettings> };
     const patch = body?.settings;
     if (!patch || typeof patch !== 'object') {
       res.status(400).json({ success: false, error: 'settings object is required' });
@@ -126,22 +126,22 @@ export function registerSystemRoutes(app: Express, deps: SystemRouteDeps): void 
     }
 
     const validationErrors: string[] = [];
-    const validModes: Array<ContextBuilderSettings['mode']> = ['minimal', 'moderate', 'aggressive'];
-    const validRankingModes: Array<ContextBuilderSettings['enableModelRanking']> = [true, false, 'dryrun'];
+    const validModes: Array<ContextHistorySettings['mode']> = ['minimal', 'moderate', 'aggressive'];
+    const validRankingModes: Array<ContextHistorySettings['enableModelRanking']> = [true, false, 'dryrun'];
 
     const settings = loadUserSettings();
-    const current = settings.contextBuilder;
-    const next: ContextBuilderSettings = { ...current };
+    const current = settings.contextHistory;
+    const next: ContextHistorySettings = { ...current };
 
     if (Object.prototype.hasOwnProperty.call(patch, 'enabled')) {
       if (typeof patch.enabled !== 'boolean') validationErrors.push('enabled must be boolean');
       else next.enabled = patch.enabled;
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'mode')) {
-      if (typeof patch.mode !== 'string' || !validModes.includes(patch.mode as ContextBuilderSettings['mode'])) {
+      if (typeof patch.mode !== 'string' || !validModes.includes(patch.mode as ContextHistorySettings['mode'])) {
         validationErrors.push('mode must be one of: minimal | moderate | aggressive');
       } else {
-        next.mode = patch.mode as ContextBuilderSettings['mode'];
+        next.mode = patch.mode as ContextHistorySettings['mode'];
       }
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'historyBudgetTokens')) {
@@ -173,10 +173,10 @@ export function registerSystemRoutes(app: Express, deps: SystemRouteDeps): void 
       }
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'enableModelRanking')) {
-      if (!validRankingModes.includes(patch.enableModelRanking as ContextBuilderSettings['enableModelRanking'])) {
+      if (!validRankingModes.includes(patch.enableModelRanking as ContextHistorySettings['enableModelRanking'])) {
         validationErrors.push("enableModelRanking must be true | false | 'dryrun'");
       } else {
-        next.enableModelRanking = patch.enableModelRanking as ContextBuilderSettings['enableModelRanking'];
+        next.enableModelRanking = patch.enableModelRanking as ContextHistorySettings['enableModelRanking'];
       }
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'rankingProviderId')) {
@@ -196,11 +196,11 @@ export function registerSystemRoutes(app: Express, deps: SystemRouteDeps): void 
       return;
     }
 
-    settings.contextBuilder = next;
+    settings.contextHistory = next;
     saveUserSettings(settings);
     res.json({
       success: true,
-      settings: settings.contextBuilder,
+      settings: settings.contextHistory,
     });
   });
 

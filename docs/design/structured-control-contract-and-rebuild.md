@@ -362,7 +362,7 @@
 ### 7.2 运行时执行约束（已落地）
 
 1. `hook.scheduler.wait`：运行时直接创建 clock delay timer（含 inject payload），到点自动唤醒原 session 继续执行。
-2. `hook.context.review`：运行时直接调用 `context_builder.rebuild`（仅重写 P4.dynamic_history）。
+2. `hook.context.review`：运行时直接调用 `context_history.rebuild`（仅重写 P4.dynamic_history）。
 3. `hook.project.flow.update` / `hook.project.memory.update` / `hook.user.profile.update`：
    - 运行时执行 append-only 写入；
    - 写入内容必须带 `idempotency_key` 与 `updated_at`；

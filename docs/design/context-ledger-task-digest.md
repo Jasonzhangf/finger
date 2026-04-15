@@ -121,7 +121,7 @@ if (learning?.memory_patch?.required) {
 
 **触发时机**：
 1. `finish_reason = stop` 时自动生成
-2. `context_builder.rebuild` 手动触发
+2. `context_history.rebuild` 手动触发
 
 **Digest 格式**：
 ```json
@@ -165,7 +165,7 @@ const DIGEST_IMPORTANT_TOOLS = new Set([
   // 邮箱与消息
   'mailbox.status', 'mailbox.dequeue', 'mailbox.enqueue',
   // 上下文与Ledger
-  'context_builder.rebuild', 'context_ledger.digest', 'context_ledger.query',
+  'context_history.rebuild', 'context_ledger.digest', 'context_ledger.query',
   // 项目管理
   'project.task.status', 'project.task.update',
   // Agent协作

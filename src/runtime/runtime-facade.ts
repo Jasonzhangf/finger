@@ -504,7 +504,7 @@ export class RuntimeFacade {
 
     try {
       const executionInput = (
-        resolvedToolName === 'context_builder.rebuild'
+        resolvedToolName === 'context_history.rebuild'
         && typeof input === 'object'
         && input !== null
         && !Array.isArray(input)
@@ -589,7 +589,7 @@ export class RuntimeFacade {
       });
 
       if (
-        resolvedToolName === 'context_builder.rebuild'
+        resolvedToolName === 'context_history.rebuild'
         && isRecord(result)
         && Array.isArray(result.__rebuiltMessages)
       ) {

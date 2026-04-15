@@ -279,7 +279,7 @@ For complex development work, enforce the following closed loop:
 - Runtime context is partitioned as: `P0(core instructions)`, `P1(runtime capabilities)`, `P2(current turn)`, `P3(continuity anchors)`, `P4(dynamic history)`, `P5(canonical storage)`.
 - `USER.md` is injected into runtime prompt context every turn (profile block). Treat it as active behavioral contract, not optional reference.
 - `FLOW.md` is runtime-injected process memory for current task execution.
-- `context_builder.rebuild` may affect only `P4(dynamic history)`; it must not alter `P0/P1/P2` and should preserve `P3` anchors.
+- `context_history.rebuild` may affect only `P4(dynamic history)`; it must not alter `P0/P1/P2` and should preserve `P3` anchors.
 - `historical_memory` must be digest-first and ledger-addressable: each digest keeps task/slot identity so it can be expanded back to raw ledger entries.
 - Unified history/memory query order:
   1) `MEMORY.md` (durable facts)
@@ -289,7 +289,7 @@ For complex development work, enforce the following closed loop:
 - Complex-task gating:
   - For complex user tasks, run the query order above first.
   - After retrieval, run a mandatory task-shift check against previous active task.
-  - If task-shift is obvious (project/path/objective switched, previous task already closed/reported, or retrieval hits are weak for current goal), you must run `context_builder.rebuild` before planning/dispatch.
+  - If task-shift is obvious (project/path/objective switched, previous task already closed/reported, or retrieval hits are weak for current goal), you must run `context_history.rebuild` before planning/dispatch.
   - Use `rebuild_budget=50000` first, and only escalate when still insufficient.
   - Do not skip rebuild in obvious task-shift cases.
 

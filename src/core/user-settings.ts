@@ -129,7 +129,7 @@ export interface LedgerSettings {
   compressTokenThreshold: number;
 }
 
-export interface ContextBuilderSettings {
+export interface ContextHistorySettings {
   enabled: boolean;
   /** 构建模式：minimal=最轻(只移除无关), moderate=中等(移除+补充), aggressive=激进(完全重排) */
   mode: 'minimal' | 'moderate' | 'aggressive';
@@ -152,7 +152,7 @@ export interface UserSettings {
   preferences: Preferences;
   ui: UISettings;
   ledger: LedgerSettings;
-  contextBuilder: ContextBuilderSettings;
+  contextHistory: ContextHistorySettings;
 }
 
 interface KernelConfigShape {
@@ -200,7 +200,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     contextWindow: 262144,
     compressTokenThreshold: 222822,
   },
-  contextBuilder: {
+  contextHistory: {
     enabled: false,
     mode: 'moderate',
     historyBudgetTokens: 20000,
@@ -514,9 +514,20 @@ export function validateUserSettings(settings: any): void {
     settings.ledger.compressTokenThreshold = Math.floor(settings.ledger.contextWindow * 0.85);
   }
 
-  // Validate contextBuilder settings (with defaults for missing fields)
-  if (!settings.contextBuilder || typeof settings.contextBuilder !== 'object') {
-    settings.contextBuilder = {
+  const legacyContextBuilder = settings.contextBuilder;
+  if (
+    (!settings.contextHistory || typeof settings.contextHistory !== 'object')
+    && legacyContextBuilder
+    && typeof legacyContextBuilder === 'object'
+    && Array.isArray(legacyContextBuilder) === false
+  ) {
+    settings.contextHistory = { ...legacyContextBuilder };
+  }
+  delete settings.contextBuilder;
+
+  // Validate contextHistory settings (with defaults for missing fields)
+  if (!settings.contextHistory || typeof settings.contextHistory !== 'object') {
+    settings.contextHistory = {
       enabled: false,
       mode: 'moderate',
       historyBudgetTokens: 20000,
@@ -528,35 +539,35 @@ export function validateUserSettings(settings: any): void {
       includeMemoryMd: false,
     };
   }
-  if (typeof settings.contextBuilder.enabled !== 'boolean') {
-    settings.contextBuilder.enabled = false;
+  if (typeof settings.contextHistory.enabled !== 'boolean') {
+    settings.contextHistory.enabled = false;
   }
   const validModes: Array<string> = ['minimal', 'moderate', 'aggressive'];
-  if (!validModes.includes(settings.contextBuilder.mode)) {
-    settings.contextBuilder.mode = 'moderate';
+  if (!validModes.includes(settings.contextHistory.mode)) {
+    settings.contextHistory.mode = 'moderate';
   }
-  if (typeof settings.contextBuilder.historyBudgetTokens !== 'number'
-    || settings.contextBuilder.historyBudgetTokens <= 0) {
-    settings.contextBuilder.historyBudgetTokens = 20000;
+  if (typeof settings.contextHistory.historyBudgetTokens !== 'number'
+    || settings.contextHistory.historyBudgetTokens <= 0) {
+    settings.contextHistory.historyBudgetTokens = 20000;
   }
-  if (typeof settings.contextBuilder.budgetRatio !== 'number' || settings.contextBuilder.budgetRatio <= 0 || settings.contextBuilder.budgetRatio > 1) {
-    settings.contextBuilder.budgetRatio = 0.85;
+  if (typeof settings.contextHistory.budgetRatio !== 'number' || settings.contextHistory.budgetRatio <= 0 || settings.contextHistory.budgetRatio > 1) {
+    settings.contextHistory.budgetRatio = 0.85;
   }
-  if (typeof settings.contextBuilder.halfLifeMs !== 'number' || settings.contextBuilder.halfLifeMs <= 0) {
-    settings.contextBuilder.halfLifeMs = 86400000;
+  if (typeof settings.contextHistory.halfLifeMs !== 'number' || settings.contextHistory.halfLifeMs <= 0) {
+    settings.contextHistory.halfLifeMs = 86400000;
   }
-  if (typeof settings.contextBuilder.overThresholdRelevance !== 'number' || settings.contextBuilder.overThresholdRelevance < 0 || settings.contextBuilder.overThresholdRelevance > 1) {
-    settings.contextBuilder.overThresholdRelevance = 0.5;
+  if (typeof settings.contextHistory.overThresholdRelevance !== 'number' || settings.contextHistory.overThresholdRelevance < 0 || settings.contextHistory.overThresholdRelevance > 1) {
+    settings.contextHistory.overThresholdRelevance = 0.5;
   }
-  const rankingFlag = settings.contextBuilder.enableModelRanking;
+  const rankingFlag = settings.contextHistory.enableModelRanking;
   if (rankingFlag !== true && rankingFlag !== false && rankingFlag !== 'dryrun') {
-    settings.contextBuilder.enableModelRanking = false;
+    settings.contextHistory.enableModelRanking = false;
   }
-  if (typeof settings.contextBuilder.rankingProviderId !== 'string') {
-    settings.contextBuilder.rankingProviderId = '';
+  if (typeof settings.contextHistory.rankingProviderId !== 'string') {
+    settings.contextHistory.rankingProviderId = '';
   }
   // MEMORY.md 不能直接注入模型上下文，配置字段仅做兼容保留。
-  settings.contextBuilder.includeMemoryMd = false;
+  settings.contextHistory.includeMemoryMd = false;
 }
 
 export function resolveAutonomyModeForRole(
@@ -690,9 +701,9 @@ export function loadLedgerSettings(): LedgerSettings {
   return settings.ledger;
 }
 
-export function loadContextBuilderSettings(): ContextBuilderSettings {
+export function loadContextHistorySettings(): ContextHistorySettings {
   const settings = loadUserSettings();
-  if (!settings.contextBuilder) {
+  if (!settings.contextHistory) {
     return {
       enabled: false,
       mode: 'moderate',
@@ -705,7 +716,7 @@ export function loadContextBuilderSettings(): ContextBuilderSettings {
       includeMemoryMd: false,
     };
   }
-  return settings.contextBuilder;
+  return settings.contextHistory;
 }
 
 /**

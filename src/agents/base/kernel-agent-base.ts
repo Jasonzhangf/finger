@@ -2043,14 +2043,13 @@ function cloneSessionMessages(history: SessionMessage[]): SessionMessage[] {
 
 function isExplicitContextRebuildRequested(metadata?: Record<string, unknown>): boolean {
   if (!metadata) return false;
+  if (metadata.contextHistoryRebuild === true) return true;
+  if (metadata.contextHistoryRebuildRequested === true) return true;
   if (metadata.contextBuilderRebuildRequested === true) return true;
-  const source = typeof metadata.contextHistorySource === 'string'
-    ? metadata.contextHistorySource.trim().toLowerCase()
-    : '';
-  if (source === 'context_builder_on_demand') return true;
   const toolTrace = Array.isArray(metadata.tool_trace) ? metadata.tool_trace : [];
   for (const item of toolTrace) {
     if (!isRecord(item)) continue;
+    if (item.tool === 'context_history.rebuild') return true;
     if (item.tool === 'context_builder.rebuild') return true;
   }
   return false;
@@ -2239,24 +2238,32 @@ function extractContextHistoryMetadata(
   for (let index = providedHistory.length - 1; index >= 0; index -= 1) {
     const metadata = providedHistory[index]?.metadata;
     if (!metadata || typeof metadata !== 'object') continue;
-    const source = typeof metadata.contextBuilderHistorySource === 'string'
-      ? metadata.contextBuilderHistorySource
-      : undefined;
-    const bypassed = typeof metadata.contextBuilderBypassed === 'boolean'
-      ? metadata.contextBuilderBypassed
-      : undefined;
-    const bypassReason = typeof metadata.contextBuilderBypassReason === 'string'
-      ? metadata.contextBuilderBypassReason
-      : undefined;
-    const rebuilt = typeof metadata.contextBuilderRebuilt === 'boolean'
-      ? metadata.contextBuilderRebuilt
-      : undefined;
+    const source = typeof metadata.contextHistorySource === 'string'
+      ? metadata.contextHistorySource
+      : typeof metadata.contextBuilderHistorySource === 'string'
+        ? metadata.contextBuilderHistorySource
+        : undefined;
+    const bypassed = typeof metadata.contextHistoryBypassed === 'boolean'
+      ? metadata.contextHistoryBypassed
+      : typeof metadata.contextBuilderBypassed === 'boolean'
+        ? metadata.contextBuilderBypassed
+        : undefined;
+    const bypassReason = typeof metadata.contextHistoryBypassReason === 'string'
+      ? metadata.contextHistoryBypassReason
+      : typeof metadata.contextBuilderBypassReason === 'string'
+        ? metadata.contextBuilderBypassReason
+        : undefined;
+    const rebuilt = typeof metadata.contextHistoryRebuilt === 'boolean'
+      ? metadata.contextHistoryRebuilt
+      : typeof metadata.contextBuilderRebuilt === 'boolean'
+        ? metadata.contextBuilderRebuilt
+        : undefined;
     if (source || bypassed !== undefined || bypassReason || rebuilt !== undefined) {
       return {
         ...(source ? { contextHistorySource: source } : {}),
-        ...(bypassed !== undefined ? { contextBuilderBypassed: bypassed } : {}),
-        ...(bypassReason ? { contextBuilderBypassReason: bypassReason } : {}),
-        ...(rebuilt !== undefined ? { contextBuilderRebuilt: rebuilt } : {}),
+        ...(bypassed !== undefined ? { contextHistoryBypassed: bypassed } : {}),
+        ...(bypassReason ? { contextHistoryBypassReason: bypassReason } : {}),
+        ...(rebuilt !== undefined ? { contextHistoryRebuilt: rebuilt } : {}),
       };
     }
   }

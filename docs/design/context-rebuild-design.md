@@ -31,7 +31,7 @@
 - **持久化原始事实**：ledger（append-only）
 
 ### 2.3 唯一显式工具入口
-- `context_builder.rebuild`
+- `context_history.rebuild`
 - 工具本身不再实现 rebuild，只调用 `forceRebuild(..., 'topic')`
 
 ---
@@ -56,7 +56,7 @@
 
 ## 3.2 topic 模式（显式）
 
-触发条件：模型显式调用 `context_builder.rebuild`，或系统明确强制 topic rebuild。
+触发条件：模型显式调用 `context_history.rebuild`，或系统明确强制 topic rebuild。
 
 唯一行为：
 1. 从 digest 中抽关键词 / 实体
@@ -86,7 +86,7 @@
   - `replaceMessages()` 后 retry
 
 ## 4.2 显式 topic rebuild
-- `src/tools/internal/context-builder-rebuild-tool.ts`
+- `src/tools/internal/context-history-rebuild-tool.ts`
   - 固定走 `forceRebuild(..., 'topic')`
   - 返回 `__rebuiltMessages`
 
@@ -129,12 +129,13 @@
 3. **唯一实现点**：`src/runtime/context-history/*`
 4. ledger 是原始事实，不直接充当运行时拼装逻辑的第二实现
 5. rebuild 只改变动态 history，不改 system / skills / mailbox / FLOW 注入层
+6. runtime / monitor / prompt 注入统一使用 `contextHistorySource` / `contextHistoryRebuilt` / `contextHistoryBypassed` / `contextHistoryBypassReason`；旧 `contextBuilder*` 仅允许作为兼容读字段
 
 ---
 
 ## 7. 验收标准
 
 - 超限时不再只报错，必须自动触发 overflow rebuild
-- `context_builder.rebuild` 与自动 overflow 共享同一 core
+- `context_history.rebuild` 与自动 overflow 共享同一 core
 - runtime 最终只消费 `Session.messages`
 - 文档、工具、route、runtime-facade 都指向同一实现

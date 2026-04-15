@@ -218,7 +218,7 @@ export function extractToolDetail(toolName: string, params?: string, result?: st
     return attachError(action);
   }
 
-  if (toolName === 'context_builder.rebuild') {
+  if (toolName === 'context_history.rebuild') {
     const mode = pickString(p.mode);
     return attachError(mode ? `mode=${mode}` : '');
   }

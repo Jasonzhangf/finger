@@ -131,7 +131,7 @@ export interface ChatCodexRunContext {
   traceId?: string;
   /** If true, skip tool gate and allow model to use all tools. */
   bypassToolGate?: boolean;
-  /** If true, kernel will auto-call context_builder.rebuild after this turn completes. */
+  /** If true, kernel will auto-call context_history.rebuild after this turn completes. */
   autoContextRebuild?: boolean;
   /** If true, kernel will auto-call digest after this turn completes (finish_reason=stop). */
   autoDigest?: boolean;

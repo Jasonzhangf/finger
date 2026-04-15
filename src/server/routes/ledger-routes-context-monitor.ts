@@ -9,9 +9,9 @@ export interface ContextMonitorSlotEntry {
   finishReason?: string;
   content?: string;
   contextHistorySource?: string;
-  contextBuilderBypassed?: boolean;
-  contextBuilderBypassReason?: string;
-  contextBuilderRebuilt?: boolean;
+  contextHistoryBypassed?: boolean;
+  contextHistoryBypassReason?: string;
+  contextHistoryRebuilt?: boolean;
   modelRound?: number;
   historyItemsCount?: number;
   contextUsagePercent?: number;
@@ -112,9 +112,18 @@ export function toMonitorEntry(entry: Record<string, unknown>, slot: number): Co
     return undefined;
   };
   const contextHistorySource = extractString(payload.contextHistorySource) ?? extractString(payloadMetadata.contextHistorySource);
-  const contextBuilderBypassed = extractBoolean(payload.contextBuilderBypassed) ?? extractBoolean(payloadMetadata.contextBuilderBypassed);
-  const contextBuilderBypassReason = extractString(payload.contextBuilderBypassReason) ?? extractString(payloadMetadata.contextBuilderBypassReason);
-  const contextBuilderRebuilt = extractBoolean(payload.contextBuilderRebuilt) ?? extractBoolean(payloadMetadata.contextBuilderRebuilt);
+  const contextHistoryBypassed = extractBoolean(payload.contextHistoryBypassed)
+    ?? extractBoolean(payloadMetadata.contextHistoryBypassed)
+    ?? extractBoolean(payload.contextBuilderBypassed)
+    ?? extractBoolean(payloadMetadata.contextBuilderBypassed);
+  const contextHistoryBypassReason = extractString(payload.contextHistoryBypassReason)
+    ?? extractString(payloadMetadata.contextHistoryBypassReason)
+    ?? extractString(payload.contextBuilderBypassReason)
+    ?? extractString(payloadMetadata.contextBuilderBypassReason);
+  const contextHistoryRebuilt = extractBoolean(payload.contextHistoryRebuilt)
+    ?? extractBoolean(payloadMetadata.contextHistoryRebuilt)
+    ?? extractBoolean(payload.contextBuilderRebuilt)
+    ?? extractBoolean(payloadMetadata.contextBuilderRebuilt);
   const modelRound = extractNumber(payload.round) ?? extractNumber(payload.modelRound);
   const historyItemsCount = extractNumber(payload.historyItemsCount) ?? extractNumber(payload.history_items_count);
   const contextUsagePercent = extractNumber(payload.contextUsagePercent) ?? extractNumber(payload.context_usage_percent);
@@ -136,9 +145,9 @@ export function toMonitorEntry(entry: Record<string, unknown>, slot: number): Co
     ...(finishReason ? { finishReason } : {}),
     ...(typeof payload.content === 'string' ? { content: payload.content } : {}),
     ...(contextHistorySource ? { contextHistorySource } : {}),
-    ...(contextBuilderBypassed !== undefined ? { contextBuilderBypassed } : {}),
-    ...(contextBuilderBypassReason ? { contextBuilderBypassReason } : {}),
-    ...(contextBuilderRebuilt !== undefined ? { contextBuilderRebuilt } : {}),
+    ...(contextHistoryBypassed !== undefined ? { contextHistoryBypassed } : {}),
+    ...(contextHistoryBypassReason ? { contextHistoryBypassReason } : {}),
+    ...(contextHistoryRebuilt !== undefined ? { contextHistoryRebuilt } : {}),
     ...(modelRound !== undefined ? { modelRound } : {}),
     ...(historyItemsCount !== undefined ? { historyItemsCount } : {}),
     ...(contextUsagePercent !== undefined ? { contextUsagePercent } : {}),
@@ -184,16 +193,16 @@ export function buildContextMonitorRounds(entries: ContextMonitorSlotEntry[]): C
       !activeRound.contextStrategy
       && (
         typeof item.contextHistorySource === 'string'
-        || typeof item.contextBuilderBypassed === 'boolean'
-        || typeof item.contextBuilderBypassReason === 'string'
-        || typeof item.contextBuilderRebuilt === 'boolean'
+        || typeof item.contextHistoryBypassed === 'boolean'
+        || typeof item.contextHistoryBypassReason === 'string'
+        || typeof item.contextHistoryRebuilt === 'boolean'
       )
     ) {
       activeRound.contextStrategy = {
         ...(typeof item.contextHistorySource === 'string' ? { source: item.contextHistorySource } : {}),
-        ...(typeof item.contextBuilderBypassed === 'boolean' ? { bypassed: item.contextBuilderBypassed } : {}),
-        ...(typeof item.contextBuilderBypassReason === 'string' ? { bypassReason: item.contextBuilderBypassReason } : {}),
-        ...(typeof item.contextBuilderRebuilt === 'boolean' ? { rebuilt: item.contextBuilderRebuilt } : {}),
+        ...(typeof item.contextHistoryBypassed === 'boolean' ? { bypassed: item.contextHistoryBypassed } : {}),
+        ...(typeof item.contextHistoryBypassReason === 'string' ? { bypassReason: item.contextHistoryBypassReason } : {}),
+        ...(typeof item.contextHistoryRebuilt === 'boolean' ? { rebuilt: item.contextHistoryRebuilt } : {}),
         derivedFromEventType: item.eventType,
         derivedFromSlot: item.slot,
       };

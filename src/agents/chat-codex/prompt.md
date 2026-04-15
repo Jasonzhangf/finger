@@ -190,7 +190,7 @@ All code MUST follow the three-layer architecture: **blocks** (foundational capa
   - `P3.continuity_anchors` (stable anchors): recent task-turn anchors + recent user-input anchors kept for continuity judgment.
   - `P4.dynamic_history` (mutable): `working_set` + `historical_memory` selected from ledger by budget/relevance.
   - `P5.canonical_storage` (not fully injected): context ledger raw timeline + `MEMORY.md`.
-- Rebuild scope is strictly limited: `context_builder.rebuild` can only rewrite `P4.dynamic_history`; it must NOT rewrite `P0/P1/P2` and must preserve continuity anchors in `P3`.
+- Rebuild scope is strictly limited: `context_history.rebuild` can only rewrite `P4.dynamic_history`; it must NOT rewrite `P0/P1/P2` and must preserve continuity anchors in `P3`.
 - Default behavior is no implicit rebuild on normal continuation turns; rebuild happens only when explicitly requested (or one-time bootstrap on truly empty history).
 - `MEMORY.md` is long-term memory and should stay concise: keep only verified ground truth (stable facts, durable decisions, accepted constraints).
 - Do NOT treat `MEMORY.md` as raw transcript storage. Keep details in ledger; store only compact truth in MEMORY.
@@ -208,18 +208,18 @@ All code MUST follow the three-layer architecture: **blocks** (foundational capa
   1. Need durable facts/constraints → read `MEMORY.md` (ground truth only).
   2. Need exact historical evidence/tool traces → `context_ledger.memory` (`search` → `query detail=true`).
   3. Need one compact task restored to full records → `context_ledger.expand_task`.
-  4. Need cleaner history for topic switch/coding deep dive → `context_builder.rebuild` (only affects `P4`).
+  4. Need cleaner history for topic switch/coding deep dive → `context_history.rebuild` (only affects `P4`).
 - Treat compact / focus hits as retrieval hints. Verify important historical claims with detailed ledger query before relying on them.
 - When historical evidence is missing, retrieve it; do not guess.
 - Non-coding / informational tasks usually do **not** need explicit history rebuild; prefer the default 20k dynamic history first.
-  Exception: if current request is clearly a task/topic shift from the previous active objective, run `context_builder.rebuild` before deep planning.
+  Exception: if current request is clearly a task/topic shift from the previous active objective, run `context_history.rebuild` before deep planning.
 - Even after a rebuild, the prompt intentionally retains continuity anchors: the last two task-turn windows plus the last ten user inputs, so you can judge whether the current request continues the same thread.
-- If the current user request is clearly a topic switch (non-continuous with current visible history), or a coding/debugging task needs more historical code/task context, call `context_builder.rebuild` with `current_prompt`.
+- If the current user request is clearly a topic switch (non-continuous with current visible history), or a coding/debugging task needs more historical code/task context, call `context_history.rebuild` with `current_prompt`.
   For system-orchestration tasks, treat project/path switch + weak retrieval hits as a mandatory rebuild signal.
 - Rebuild budget ladder:
   1. start with `rebuild_budget=50000` for coding/debugging work,
   2. only escalate to `rebuild_budget=110000` when the 50k rebuild is still insufficient.
-- `context_builder.rebuild` also accepts `budget_tokens` / `target_budget` as aliases for rebuild budget.
+- `context_history.rebuild` also accepts `budget_tokens` / `target_budget` as aliases for rebuild budget.
 
 ## Mailbox
 Mailbox is the async communication channel for tasks, notifications, and inter-agent messages.

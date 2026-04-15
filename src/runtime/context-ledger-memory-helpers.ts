@@ -71,13 +71,18 @@ export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
 
 export function parseRuntimeContext(rawInput: unknown): ContextLedgerMemoryRuntimeContext {
   if (!isRecord(rawInput)) return {};
-  const contextBuilder = isRecord(rawInput.context_builder)
+  const rawContextHistory = isRecord(rawInput.context_history)
+    ? rawInput.context_history
+    : isRecord(rawInput.context_builder)
+      ? rawInput.context_builder
+      : undefined;
+  const contextHistory = rawContextHistory
     ? {
-        working_set_block_ids: normalizeStringArray(rawInput.context_builder.working_set_block_ids),
-        historical_block_ids: normalizeStringArray(rawInput.context_builder.historical_block_ids),
-        ranking_ids: normalizeStringArray(rawInput.context_builder.ranking_ids),
-        raw_task_block_count: normalizePositiveInt(rawInput.context_builder.raw_task_block_count),
-        filtered_task_block_count: normalizePositiveInt(rawInput.context_builder.filtered_task_block_count),
+        working_set_block_ids: normalizeStringArray(rawContextHistory.working_set_block_ids),
+        historical_block_ids: normalizeStringArray(rawContextHistory.historical_block_ids),
+        ranking_ids: normalizeStringArray(rawContextHistory.ranking_ids),
+        raw_task_block_count: normalizePositiveInt(rawContextHistory.raw_task_block_count),
+        filtered_task_block_count: normalizePositiveInt(rawContextHistory.filtered_task_block_count),
       }
     : undefined;
   return {
@@ -88,7 +93,7 @@ export function parseRuntimeContext(rawInput: unknown): ContextLedgerMemoryRunti
     can_read_all: rawInput.can_read_all === true,
     readable_agents: normalizeStringArray(rawInput.readable_agents),
     focus_max_chars: normalizePositiveInt(rawInput.focus_max_chars),
-    ...(contextBuilder ? { context_builder: contextBuilder } : {}),
+    ...(contextHistory ? { context_history: contextHistory } : {}),
   };
 }
 

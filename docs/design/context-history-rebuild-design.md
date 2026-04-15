@@ -5,7 +5,7 @@
 
 ## 1. 当前定位
 
-`context_builder.rebuild` 现在不是一套独立的 context builder pipeline。
+`context_history.rebuild` 现在不是一套独立的 context builder pipeline。
 
 它的唯一职责是：
 - 作为**显式 topic rebuild 工具入口**
@@ -21,7 +21,7 @@
 
 ```text
 model/tool call
-  -> context_builder.rebuild
+  -> context_history.rebuild
   -> forceRebuild(sessionId, ledgerPath, 'topic', ...)
   -> runtime/context-history/rebuild.ts
   -> __rebuiltMessages

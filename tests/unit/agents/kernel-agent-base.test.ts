@@ -152,10 +152,10 @@ describe('KernelAgentBase session binding', () => {
             role: 'user',
             content: '历史消息',
             metadata: {
-              contextBuilderHistorySource: 'raw_session',
-              contextBuilderBypassed: true,
-              contextBuilderBypassReason: 'media_turn',
-              contextBuilderRebuilt: false,
+              contextHistorySource: 'raw_session',
+              contextHistoryBypassed: true,
+              contextHistoryBypassReason: 'media_turn',
+              contextHistoryRebuilt: false,
             },
           },
           ];
@@ -251,7 +251,7 @@ describe('KernelAgentBase session binding', () => {
     await agent.handle({
       text: 'rebuild-enabled',
       sessionId: 'ui-session-rebuild',
-      metadata: { contextBuilderRebuild: true },
+      metadata: { contextHistoryRebuild: true },
     });
 
     expect(contexts).toHaveLength(1);
@@ -279,7 +279,7 @@ describe('KernelAgentBase session binding', () => {
     expect(contexts).toHaveLength(1);
   });
 
-  it('allows explicit context_builder.rebuild to refresh history even during unfinished continuation', async () => {
+  it('allows explicit context_history.rebuild to refresh history even during unfinished continuation', async () => {
     const contexts: KernelRunContext[] = [];
     const runner: KernelAgentRunner = {
       runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
@@ -297,7 +297,7 @@ describe('KernelAgentBase session binding', () => {
       mockSessionManager,
     );
 
-    await agent.handle({ text: 'explicit-rebuild', sessionId: 'ui-session-explicit', metadata: { contextBuilderRebuild: true } });
+    await agent.handle({ text: 'explicit-rebuild', sessionId: 'ui-session-explicit', metadata: { contextHistoryRebuild: true } });
     expect(contexts).toHaveLength(1);
   });
 

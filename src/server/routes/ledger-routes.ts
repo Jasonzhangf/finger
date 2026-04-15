@@ -5,7 +5,7 @@
 
 import type { Express } from 'express';
 import type { SessionManager } from '../../orchestration/session-manager.js';
-import { getContextWindow, loadContextBuilderSettings } from '../../core/user-settings.js';
+import { getContextWindow, loadContextHistorySettings } from '../../core/user-settings.js';
 import { listLedgerSessionsSnapshot, resolveLedgerSource } from './ledger-routes-storage.js';
 import {
   buildContextMonitorRounds,
@@ -100,12 +100,12 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
       const slotEntries = windowEntries.map((entry, idx) => toMonitorEntry(entry, startIndex + idx + 1));
       const rounds = buildContextMonitorRounds(slotEntries);
 
-      const contextBuilderSettings = loadContextBuilderSettings();
+      const contextHistorySettings = loadContextHistorySettings();
       const contextWindow = getContextWindow();
-      const configuredBudget = Number.isFinite(contextBuilderSettings.historyBudgetTokens)
-        && contextBuilderSettings.historyBudgetTokens > 0
-        ? Math.floor(contextBuilderSettings.historyBudgetTokens)
-        : Math.floor(contextWindow * contextBuilderSettings.budgetRatio);
+      const configuredBudget = Number.isFinite(contextHistorySettings.historyBudgetTokens)
+        && contextHistorySettings.historyBudgetTokens > 0
+        ? Math.floor(contextHistorySettings.historyBudgetTokens)
+        : Math.floor(contextWindow * contextHistorySettings.budgetRatio);
       const targetBudget = Math.max(1, Math.min(contextWindow, configuredBudget));
 
       const contextBuild = buildSnapshotContextBuild(session?.messages, { targetBudget });
@@ -143,17 +143,17 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
         projectPath: session?.projectPath || '',
         agentId: resolvedAgentId,
         updatedAt: new Date().toISOString(),
-        contextBuilder: {
-          enabled: contextBuilderSettings.enabled,
-          historyBudgetTokens: contextBuilderSettings.historyBudgetTokens,
-          budgetRatio: contextBuilderSettings.budgetRatio,
+        contextHistory: {
+          enabled: contextHistorySettings.enabled,
+          historyBudgetTokens: contextHistorySettings.historyBudgetTokens,
+          budgetRatio: contextHistorySettings.budgetRatio,
           targetBudget,
           historyOnly: true,
-          halfLifeMs: contextBuilderSettings.halfLifeMs,
+          halfLifeMs: contextHistorySettings.halfLifeMs,
           includeMemoryMd: false,
-          enableModelRanking: contextBuilderSettings.enableModelRanking,
-          rankingProviderId: contextBuilderSettings.rankingProviderId,
-          mode: contextBuilderSettings.mode,
+          enableModelRanking: contextHistorySettings.enableModelRanking,
+          rankingProviderId: contextHistorySettings.rankingProviderId,
+          mode: contextHistorySettings.mode,
         },
         contextBuild,
         slotWindow: {

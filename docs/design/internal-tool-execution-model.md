@@ -40,7 +40,7 @@ Requirements:
 Examples:
 
 - `context_ledger.memory`
-- `context_builder.rebuild`
+- `context_history.rebuild`
 - `mailbox.*`
 - `heartbeat.*`
 - `permission.*`

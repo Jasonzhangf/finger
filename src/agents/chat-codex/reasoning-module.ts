@@ -723,7 +723,7 @@ function buildMemoryRetrievalPromptBlock(metadata: Record<string, unknown> | und
     '- Long-term durable facts/constraints: read MEMORY.md.',
     '- Timeline/history/tool traces: use context_ledger.memory (search -> query detail=true with slot_start/slot_end).',
     '- Need full details from a compact digest/task block: use context_ledger.expand_task.',
-    '- Need broader relevant history in prompt: use context_builder.rebuild (P4 dynamic_history only).',
+    '- Need broader relevant history in prompt: use context_history.rebuild (P4 dynamic_history only).',
     '- Do not treat visible prompt history as complete truth when historical evidence is required.',
   ].join('\n');
 }
@@ -834,18 +834,6 @@ function parseOptionalNonNegativeNumber(value: unknown): number | undefined {
   return undefined;
 }
 
-
-function shouldPreferContextBuilderHistory(metadata: Record<string, unknown> | undefined): boolean {
-  if (!metadata) return false;
-  const source = parseOptionalString(metadata.contextHistorySource)?.trim().toLowerCase() ?? '';
-  if (source === 'raw_session' || source === 'raw_session_fallback') return true;
-  if (source === 'session_view_passthrough' || source === 'session_view_fallback') return true;
-  if (source.startsWith('context_builder')) return true;
-  if (parseOptionalBoolean(metadata.contextBuilderIndexed) === true) return true;
-  if (parseOptionalBoolean(metadata.contextBuilderRebuilt) === true) return true;
-  if (parseOptionalBoolean(metadata.contextBuilderBypassed) === false) return true;
-  return false;
-}
 
 function hasMediaInputItemsInMetadata(metadata: Record<string, unknown> | undefined): boolean {
   if (!metadata) return false;

@@ -17,7 +17,7 @@ const SPEC_SAFE_ALIAS_GROUPS = [
   ['project.task.update', 'project_task_update'],
   ['context_ledger.memory', 'context_ledger_memory'],
   ['context_ledger.expand_task', 'context_ledger_expand_task'],
-  ['context_builder.rebuild', 'context_builder_rebuild'],
+  ['context_history.rebuild', 'context_history_rebuild'],
   ['mailbox.status', 'mailbox_status'],
   ['mailbox.list', 'mailbox_list'],
   ['mailbox.read', 'mailbox_read'],

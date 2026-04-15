@@ -219,8 +219,11 @@ export interface ChatCodexRunContext {
   developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
   tools?: ChatCodexToolSpecification[];
   toolExecution?: ChatCodexToolExecutionConfig;
-  onKernelEvent?: (event: ChatCodexKernelEvent) => void;
-  contextBreakdownSnapshot?: ContextBreakdownSnapshot;
+ onKernelEvent?: (event: ChatCodexKernelEvent) => void;
+ contextBreakdownSnapshot?: ContextBreakdownSnapshot;
+  contextUsagePercentFromMsg?: number;
+  estimatedTokensInContextWindowFromMsg?: number;
+  modelContextWindowFromMsg?: number;
 }
 
 export type KernelInputItem =
@@ -249,7 +252,6 @@ interface KernelUserTurnOptions {
   context_window?: {
     max_input_tokens?: number;
     baseline_tokens?: number;
-    auto_compact_threshold_ratio?: number;
   };
   compact?: {
     manual?: boolean;
@@ -348,6 +350,9 @@ interface ActiveKernelTurn {
   seenSessionConfigured: boolean;
   onKernelEvent?: (event: ChatCodexKernelEvent) => void;
   contextBreakdownSnapshot?: ContextBreakdownSnapshot;
+  contextUsagePercentFromMsg?: number;
+  estimatedTokensInContextWindowFromMsg?: number;
+  modelContextWindowFromMsg?: number;
 }
 
 interface KernelSessionProcess {
@@ -956,11 +961,34 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
 
     if (parsed.msg.type !== 'task_complete') return;
 
+    // 调试：记录 task_complete 时 parsed.msg 的关键字段
+    chatCodexLog.info('task_complete received', {
+      hasContextUsagePercent: typeof parsed.msg.context_usage_percent === 'number',
+      contextUsagePercent: parsed.msg.context_usage_percent,
+      hasEstimatedTokens: typeof parsed.msg.estimated_tokens_in_context_window === 'number',
+      estimatedTokens: parsed.msg.estimated_tokens_in_context_window,
+      hasModelContextWindow: typeof parsed.msg.model_context_window === 'number',
+      modelContextWindow: parsed.msg.model_context_window,
+      hasMetadataJson: typeof parsed.msg.metadata_json === 'string' && parsed.msg.metadata_json.length > 0,
+      msgKeys: Object.keys(parsed.msg).join(','),
+    });
+
     if (parsed.msg.last_agent_message && parsed.msg.last_agent_message.trim().length > 0) {
       activeTurn.replyText = parsed.msg.last_agent_message;
     }
-    if (parsed.msg.metadata_json && parsed.msg.metadata_json.trim().length > 0) {
-      activeTurn.kernelMetadata = parseKernelMetadata(parsed.msg.metadata_json);
+   if (parsed.msg.metadata_json && parsed.msg.metadata_json.trim().length > 0) {
+     activeTurn.kernelMetadata = parseKernelMetadata(parsed.msg.metadata_json);
+   }
+
+    // 从 parsed.msg 顶层提取 context_usage_percent（Kernel stdout 直接返回，不在 metadata_json 中）
+    if (typeof parsed.msg.context_usage_percent === 'number' && Number.isFinite(parsed.msg.context_usage_percent)) {
+      activeTurn.contextUsagePercentFromMsg = parsed.msg.context_usage_percent;
+    }
+    if (typeof parsed.msg.estimated_tokens_in_context_window === 'number' && Number.isFinite(parsed.msg.estimated_tokens_in_context_window)) {
+      activeTurn.estimatedTokensInContextWindowFromMsg = parsed.msg.estimated_tokens_in_context_window;
+    }
+    if (typeof parsed.msg.model_context_window === 'number' && Number.isFinite(parsed.msg.model_context_window)) {
+      activeTurn.modelContextWindowFromMsg = parsed.msg.model_context_window;
     }
 
     const finalReply = activeTurn.replyText;
@@ -1028,8 +1056,10 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
           context_window: typeof result.kernelMetadata.context_window === 'number' ? result.kernelMetadata.context_window : 262144,
           history_items_count: typeof result.kernelMetadata.history_items_count === 'number' ? result.kernelMetadata.history_items_count : 0,
           round: typeof result.kernelMetadata.round === 'number' ? result.kernelMetadata.round : 0,
-          seq: typeof result.kernelMetadata.seq === 'number' ? result.kernelMetadata.seq : 0,
-          context_usage_percent: typeof result.kernelMetadata.context_usage_percent === 'number' ? result.kernelMetadata.context_usage_percent : undefined,
+         seq: typeof result.kernelMetadata.seq === 'number' ? result.kernelMetadata.seq : 0,
+         context_usage_percent: activeTurn.contextUsagePercentFromMsg !== undefined
+           ? activeTurn.contextUsagePercentFromMsg
+           : (typeof result.kernelMetadata.context_usage_percent === 'number' ? result.kernelMetadata.context_usage_percent : undefined),
         },
         status: 'idle',
       };
@@ -1220,9 +1250,12 @@ export function createChatCodexModule(
       const toolSpecificationsForTurn = augmentToolSpecificationsWithCompatAliases(toolSpecifications);
       const mode = parseOptionalString(context?.metadata?.kernelMode) ?? parseOptionalString(context?.metadata?.mode) ?? 'main';
       const contextHistorySource = parseOptionalString(context?.metadata?.contextHistorySource);
-      const contextBuilderBypassed = parseOptionalBoolean(context?.metadata?.contextBuilderBypassed);
-      const contextBuilderBypassReason = parseOptionalString(context?.metadata?.contextBuilderBypassReason);
-      const contextBuilderRebuilt = parseOptionalBoolean(context?.metadata?.contextBuilderRebuilt);
+      const contextHistoryBypassed = parseOptionalBoolean(context?.metadata?.contextHistoryBypassed)
+        ?? parseOptionalBoolean(context?.metadata?.contextBuilderBypassed);
+      const contextHistoryBypassReason = parseOptionalString(context?.metadata?.contextHistoryBypassReason)
+        ?? parseOptionalString(context?.metadata?.contextBuilderBypassReason);
+      const contextHistoryRebuilt = parseOptionalBoolean(context?.metadata?.contextHistoryRebuilt)
+        ?? parseOptionalBoolean(context?.metadata?.contextBuilderRebuilt);
       const contextLedgerAgentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
         ?? parseOptionalString(context?.metadata?.agentId)
         ?? 'unknown-agent';
@@ -1290,9 +1323,9 @@ export function createChatCodexModule(
           agentId: contextLedgerAgentId,
           roleProfile: contextLedgerRole,
           ...(contextHistorySource ? { contextHistorySource } : {}),
-          ...(contextBuilderBypassed !== undefined ? { contextBuilderBypassed } : {}),
-          ...(contextBuilderBypassReason ? { contextBuilderBypassReason } : {}),
-          ...(contextBuilderRebuilt !== undefined ? { contextBuilderRebuilt } : {}),
+          ...(contextHistoryBypassed !== undefined ? { contextHistoryBypassed } : {}),
+          ...(contextHistoryBypassReason ? { contextHistoryBypassReason } : {}),
+          ...(contextHistoryRebuilt !== undefined ? { contextHistoryRebuilt } : {}),
           ...(reviewPhase ? { reviewPhase } : {}),
           ...(typeof reviewIteration === 'number' ? { reviewIteration } : {}),
           ...(contextBreakdownSnapshot ? { contextBreakdown: contextBreakdownSnapshot } : {}),
@@ -3291,12 +3324,12 @@ function resolveHistoryItems(
   metadata: Record<string, unknown> | undefined,
 ): Array<Record<string, unknown>> {
   const hasMediaInput = hasMediaInputItemsInMetadata(metadata);
-  const preferContextBuilderHistory = shouldPreferContextBuilderHistory(metadata);
+  const preferContextHistory = shouldPreferContextHistory(metadata);
   const fromMetadata = metadata?.kernelApiHistory;
   const normalizedFromMetadata = !hasMediaInput && Array.isArray(fromMetadata)
     ? fromMetadata.filter((item): item is Record<string, unknown> => isRecord(item))
     : [];
-  if (!preferContextBuilderHistory && normalizedFromMetadata.length > 0) {
+  if (!preferContextHistory && normalizedFromMetadata.length > 0) {
     return normalizedFromMetadata;
   }
 
@@ -3327,14 +3360,16 @@ function resolveHistoryItems(
   return [];
 }
 
-function shouldPreferContextBuilderHistory(metadata: Record<string, unknown> | undefined): boolean {
+function shouldPreferContextHistory(metadata: Record<string, unknown> | undefined): boolean {
   if (!metadata) return false;
   const source = parseOptionalString(metadata.contextHistorySource)?.trim().toLowerCase() ?? '';
+  if (source === 'context_history_single_source') return true;
   if (source === 'raw_session' || source === 'raw_session_fallback') return true;
   if (source === 'session_view_passthrough' || source === 'session_view_fallback') return true;
-  if (source.startsWith('context_builder')) return true;
-  if (parseOptionalBoolean(metadata.contextBuilderIndexed) === true) return true;
+  if (source.startsWith('context_history')) return true;
+  if (parseOptionalBoolean(metadata.contextHistoryRebuilt) === true) return true;
   if (parseOptionalBoolean(metadata.contextBuilderRebuilt) === true) return true;
+  if (parseOptionalBoolean(metadata.contextHistoryBypassed) === false) return true;
   if (parseOptionalBoolean(metadata.contextBuilderBypassed) === false) return true;
   return false;
 }
@@ -3495,61 +3530,6 @@ function mapDeveloperRoleToPromptAgentType(role: ChatCodexDeveloperRole): string
   return role === 'system' ? 'system' : 'project';
 }
 
-function buildContinuityDeveloperInstructions(
-  history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> | undefined,
-  metadata: Record<string, unknown> | undefined,
-): string {
-  const source = parseOptionalString(metadata?.contextHistorySource) ?? 'unknown';
-  
-// 只使用最近 20 条 history（避免大历史导致 developerInstructions 过大）
-  const MAX_HISTORY_ITEMS = 10;
-  const recentHistory = Array.isArray(history) && history.length > MAX_HISTORY_ITEMS 
-    ? history.slice(-MAX_HISTORY_ITEMS) 
-    : history ?? [];
-  
-  // Log history size to understand the input
-  const originalHistoryLength = Array.isArray(history) ? history.length : 0;
-  if (originalHistoryLength > 20) {
-    chatCodexLog.warn('buildContinuityDeveloperInstructions truncated', {
-      originalHistoryLength,
-      usedHistoryLength: recentHistory.length,
-      source,
-      originalTotalChars: Array.isArray(history) ? history.reduce((sum, item) => sum + (item.content?.length ?? 0), 0) : 0,
-      usedTotalChars: recentHistory.reduce((sum, item) => sum + (item.content?.length ?? 0), 0),
-    });
-  }
-  
-const recentUsers = recentHistory
-    .filter((item) => item.role === 'user' && typeof item.content === 'string' && item.content.trim().length > 0)
-    .slice(-5)
-    .map((item, index) => `${index + 1}. ${truncateInlineText(item.content, 80)}`);
-  const recentTaskTurns = extractRecentTaskTurnsFromHistory(recentHistory, 2)
-    .map((task, index) => {
-      const preview = task
-        .map((item) => `${item.role}: ${truncateInlineText(item.content, 60)}`)
-        .join(' | ');
-      return `${index + 1}. ${preview}`;
-    });
-
-  if (recentUsers.length === 0 && recentTaskTurns.length === 0) {
-    return [
-      '[conversation_continuity]',
-      `history_source=${source}`,
-      'No recent continuity anchors were extracted from visible history.',
-      'If the current request seems disconnected from the visible context, consider `context_builder.rebuild` with `current_prompt`.',
-    ].join('\n');
-  }
-
-  return [
-    '[conversation_continuity]',
-    `history_source=${source}`,
-    'Use these anchors to decide if the thread is continuous. If discontinuous, call context_builder.rebuild.',
-    recentTaskTurns.length > 0 ? 'recent_task_turns=' : '',
-    ...recentTaskTurns,
-    recentUsers.length > 0 ? 'recent_user_inputs=' : '',
-    ...recentUsers,
-  ].filter((line) => line.length > 0).join('\n');
-}
 // 判断文本是否为工具调用（非对话内容，如日志输出、状态报告等），用于过滤历史
 function isToolCallText(content: string): boolean {
   if (!content || typeof content !== 'string') return false;
@@ -3560,36 +3540,6 @@ function isToolCallText(content: string): boolean {
   ];
 
   return toolCallPatterns.some(pattern => content.includes(pattern));
-}
-
-function extractRecentTaskTurnsFromHistory(
-  history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> | undefined,
-  taskCount = 2,
-): Array<Array<{ role: 'user' | 'assistant' | 'system'; content: string }>> {
-  if (!Array.isArray(history) || history.length === 0) return [];
-  const turns: Array<Array<{ role: 'user' | 'assistant' | 'system'; content: string }>> = [];
-  let current: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
-  for (const item of history) {
-    if (item.role === 'user' && current.length > 0) {
-      turns.push(current);
-      current = [];
-    }
-    if (!isToolCallText(item.content)) {
-      current.push(item);
-    }
-  }
-  if (current.length > 0) turns.push(current);
-  return turns.slice(-Math.max(1, Math.floor(taskCount)));
-}
-
-function truncateInlineText(value: string, maxChars: number): string {
-  // 先过滤掉工具调用文本
-  if (isToolCallText(value)) {
-    return '[已过滤]'; // 工具调用内容不参与截断计算
-  }
-  const flattened = value.replace(/\s+/g, ' ').trim();
-  if (flattened.length <= maxChars) return flattened;
-  return `${flattened.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
 function resolveDeveloperRoleFromMetadata(
@@ -3720,14 +3670,10 @@ function resolveContextWindow(
   const baselineTokens =
     parseOptionalNumber(metadata?.baselineTokens)
     ?? parseOptionalNumber(metadata?.baseline_tokens);
-  const thresholdRatio =
-    parseOptionalNumber(metadata?.autoCompactThresholdRatio)
-    ?? parseOptionalNumber(metadata?.auto_compact_threshold_ratio);
 
   if (
     maxInputTokens === undefined &&
-    baselineTokens === undefined &&
-    thresholdRatio === undefined
+    baselineTokens === undefined
   ) {
     return undefined;
   }
@@ -3735,7 +3681,6 @@ function resolveContextWindow(
   return {
     ...(maxInputTokens !== undefined ? { max_input_tokens: maxInputTokens } : {}),
     ...(baselineTokens !== undefined ? { baseline_tokens: baselineTokens } : {}),
-    ...(thresholdRatio !== undefined ? { auto_compact_threshold_ratio: thresholdRatio } : {}),
   };
 }
 
@@ -4072,7 +4017,7 @@ function defaultToolSpecification(name: string): ChatCodexToolSpecification {
     };
   }
 
-  if (name === 'context_builder.rebuild') {
+  if (name === 'context_history.rebuild') {
     return {
       name,
       description:

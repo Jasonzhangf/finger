@@ -1,1169 +1,287 @@
 ---
 name: finger dev skills
-description: Project development guardrails for Finger. Defines layered architecture, module ownership, core-priority invariants, mandatory change/testing workflow, and multi-agent collaboration patterns. Use for any design, refactor, debug, or feature work in this repo.
+description: Canonical execution skill for Finger repo development. Covers layer ownership, source-of-truth routing, minimal validation, and repo-specific pitfalls for design, refactor, debug, and feature work.
 ---
 
 # Finger Dev Skills
 
 ## 0) Intent
 
-This skill is the project-local execution contract for Finger engineering work.
+This skill is the **project-local execution adapter** for Finger engineering work.
 
-## 0.1) Mandatory Testing Hierarchy (MUST)
+It exists to answer only four things:
+1. **Which layer owns the change?**
+2. **Where is the single source of truth?**
+3. **What is the smallest correct change point?**
+4. **What is the minimum validation required before handoff?**
 
-Every code change MUST be validated through a complete testing hierarchy before claiming completion. No feature is "done" without passing all relevant test levels.
+It is **not** the place for full handbooks, long architecture specs, or duplicated hard guards.
 
-### Testing Levels (Required by Change Scope)
+## 0.1) Canonical sources
 
-| Change Scope | Required Tests | Coverage Threshold |
-|---|---|---|
-| **Single function/utility** | Unit tests | ≥90% branch coverage |
-| **Module/class** | Unit + integration tests | ≥80% path coverage |
-| **Cross-module interaction** | Integration + orchestration tests | Critical paths covered |
-| **API endpoint/external interface** | Unit + integration + E2E | Full request/response cycle |
-| **New feature/workflow** | Unit + integration + E2E + regression | All user paths + edge cases |
-| **Performance-sensitive code** | All above + stress/benchmark | Latency + throughput bounds |
-| **Lifecycle/daemon/process** | All above + longevity tests | Restart + recovery + timeout |
+Use these sources in this order:
 
-### Test Categories (Must Cover)
+1. `AGENTS.md`
+   - global hard guards, safety rules, validation discipline, worker/session rules
+2. `references/layer-boundaries.md`
+   - authoritative layer dependency and ownership rules
+3. `templates/change-checklist.md`
+   - handoff / validation template
+4. `docs/design/*.md`
+   - subsystem-specific design truth
 
-1. **Unit tests** (`tests/unit/**/*.test.ts`)
-   - Pure function behavior
-   - Input validation and error handling
-   - Edge cases (null, empty, overflow, negative)
-   - State transitions
+If this skill disagrees with `AGENTS.md` or a subsystem design doc, **this skill is wrong** and must be updated.
 
-2. **Integration tests** (`tests/integration/**/*.test.ts`)
-   - Module-to-module interaction
-   - Real filesystem/network where applicable
-   - Mocked external services
-   - Error propagation chains
+---
 
-3. **Orchestration tests** (`tests/orchestration/**/*.test.ts`)
-   - Workflow composition correctness
-   - Dispatch/recovery semantics
-   - Lifecycle state machine transitions
-   - Cross-agent coordination
+## 1) When to use this skill
 
-4. **E2E tests** (`tests/e2e/**/*.test.ts`, `tests/e2e-ui/**/*.test.ts`)
-   - Full system startup/shutdown
-   - Real user interaction flows
-   - Daemon + agent + kernel + channel end-to-end
-   - Timeout and failure recovery in real conditions
+Use this skill for any Finger task involving:
+- architecture or refactor
+- runtime / session / lifecycle / dispatch
+- context history / compact / rebuild
+- channel / bridge / gateway flows
+- cross-module debugging
+- feature implementation that touches multiple layers
 
-5. **Regression tests**
-   - Previously fixed bugs must have test guard
-   - Each GitHub issue fix must include test case
-   - Historical failure modes covered
+Do **not** use this skill as a substitute for reading the owning design doc when the task is subsystem-specific.
 
-6. **Stress/Load tests** (when applicable)
-   - Concurrent request handling
-   - Resource exhaustion scenarios
-   - Memory/CPU bounds
-   - Long-running process stability
+---
 
-### Pre-Commit Checklist (MANDATORY)
+## 2) Finger execution workflow
 
-Before any commit that changes runtime behavior:
+### Step 1: classify the owning layer first
+
+Use `references/layer-boundaries.md`.
+
+#### Layer A — Core / Blocks / Runtime truth
+Typical paths:
+- `src/blocks/**`
+- `src/runtime/**`
+- core persistence / session truth in `src/orchestration/**`
+
+Owns:
+- deterministic state transitions
+- persistence truth
+- queue / scheduler primitives
+- low-level runtime / tool primitives
+
+Must not contain:
+- channel formatting
+- UI wording
+- delivery-specific fallback logic
+
+#### Layer B — Orchestration / App policy
+Typical paths:
+- `src/server/**`
+- `src/serverx/**`
+- `src/orchestration/**`
+- role-policy glue in `src/agents/**`
+
+Owns:
+- workflow composition
+- dispatch / recovery policy
+- lifecycle wiring
+- block composition
+- rebuild policy using Layer A truth
+
+Must not contain:
+- duplicated persistence truth
+- UI / channel rendering behavior
+
+#### Layer C — Delivery / Consumer
+Typical paths:
+- `src/bridges/**`
+- `src/ui/**`
+- channel-facing output formatting / sanitization
+
+Owns:
+- rendering and presentation
+- channel adaptation
+- output sanitization
+
+Must not contain:
+- core lifecycle correctness logic
+- blocking dependencies that prevent Layer A/B completion
+
+### Step 2: find the single source of truth
+
+Before editing, answer all three:
+1. Where does the symptom appear?
+2. Where does the truth live?
+3. Is there any second implementation that would diverge after the fix?
+
+If you cannot answer #3, keep searching before editing.
+
+### Step 3: change only the owning layer
+
+Rules:
+- fix the root cause at the owning layer
+- keep upper layers thin
+- do not mirror business logic into bridges/UI
+- do not create a second implementation “just for this flow”
+
+### Step 4: validate in the smallest correct matrix
+
+Choose the smallest set that proves the change.
+
+---
+
+## 3) Module quick map
+
+| Need | Primary path |
+|---|---|
+| Block / core primitive | `src/blocks/<block-name>/` |
+| Runtime / context / tool execution | `src/runtime/` |
+| Orchestration / workflow | `src/orchestration/`, `src/serverx/modules/`, `src/server/modules/` |
+| Agent policy / role behavior | `src/agents/` |
+| Session / ownership / persistence | `src/orchestration/session-manager.ts`, `src/orchestration/session-types.ts` |
+| Channel bridge / delivery | `src/bridges/`, `src/server/modules/channel-*` |
+| Gateway bridge CLI | `src/cli/finger-gateway-bridge.ts` |
+| Internal tools | `src/tools/internal/` |
+| Unit tests | `tests/unit/**`, `tests/modules/**` |
+| Integration tests | `tests/integration/**` |
+| Orchestration tests | `tests/orchestration/**` |
+| E2E tests | `tests/e2e/**`, `tests/e2e-ui/**` |
+
+---
+
+## 4) Minimal validation matrix
+
+### A. Localized logic change
+Run targeted unit tests first:
 
 ```bash
-# 1. Run changed module unit tests
-pnpm vitest run tests/unit/<module-path>/*.test.ts
+pnpm vitest run tests/unit/<path>/*.test.ts
+```
 
-# 2. Run integration tests for affected layers
-pnpm vitest run tests/integration/<layer>/*.test.ts
+### B. Cross-module change
+Run unit + integration:
 
-# 3. Run full test suite if touching core/shared code
-pnpm vitest run
+```bash
+pnpm vitest run tests/unit/<path>/*.test.ts
+pnpm vitest run tests/integration/<path>/*.test.ts
+```
 
-# 4. Verify build succeeds
+### C. Lifecycle / session / dispatch / context-history change
+Run the relevant targeted tests, then these repo gates:
+
+```bash
+pnpm run test:session-regression
+pnpm run test:compact-projection-regression
+```
+
+Run `test:compact-projection-regression` when compact / projection / rebuild / session snapshot behavior is touched.
+
+### D. Runtime/backend change before handoff
+
+```bash
 pnpm run build:backend
-
-# 5. For E2E-level changes, run smoke E2E
-pnpm vitest run tests/e2e/smoke/*.test.ts
 ```
 
-### Evidence Requirements
+### E. Channel / external interface change
+Use inside-out order:
 
-- **No test = no merge.** Uncommitted code without tests is incomplete work.
-- **Test output must be captured.** Include test run results in completion report.
-- **Coverage gaps must be documented.** If a test level is skipped, explain why and risk.
-- **Edge cases are not optional.** Timeout, failure, restart, overflow, null handling must be tested.
+1. unit: routing / normalization / session selection
+2. integration: bridge ↔ hub ↔ runtime coordination
+3. E2E: real bridge process / real message path when required
 
-### Testing Anti-patterns (PROHIBITED)
-
-- **"It is too hard to test"** → Refactor to make testable, or write integration/E2E test
-- **"Manual testing is enough"** → Not for production code; automate the manual flow
-- **"Tests would take too long"** → Write minimal critical-path tests first, expand later
-- **"I will add tests later"** → Later never comes; tests are part of the change, not afterthought
-- **"The code is simple"** → Simple code has simple bugs; write simple tests
-- **"Mock everything"** → Integration/E2E must use real paths; mocks are for unit layer only
-
-### Skill Update Rule
-
-When a new testing pattern/requirement emerges from debugging or review:
-1. Document the failure mode and test gap
-2. Add test case to appropriate test file
-3. Update this skill checklist if pattern is reusable
-4. For any context compact / rebuild change, add a simulated-trigger regression that verifies all three together: `compact` metadata, rebuilt `api_history`, and persisted `compact-memory` output. Log inspection alone is not sufficient.
-5. For daemon / gateway / lifecycle E2E tests, reserve every runtime port they touch (HTTP / WS / bridge) and wait on real health, pid, or protocol-ready evidence. Fixed sleeps and hard-coded ports are not acceptable full-suite stability evidence.
-
-
-Use this skill whenever you touch architecture, core runtime, orchestration, dispatch/recovery, context rebuild, progress/reporting, or cross-agent collaboration logic.
-
-## 1) Non-negotiable priorities (MUST)
-
-1. **Core runtime forward progress is P0.**
-   - Consumer/presentation layers must never block core execution.
-   - If consumer side fails, core still progresses and persists state.
-
-2. **No silent failure.**
-   - Any failure in dispatch, lifecycle update, progress emit, hook, or persistence must be observable (status + reason + evidence).
-
-3. **Restart semantics are strict.**
-   - Non-restart path: in-process continuation is allowed within bounded policy.
-   - Post-restart path: never pretend to continue stale in-flight kernel state; recover via persisted lifecycle truth.
-
-4. **Root-cause fixes only.**
-   - No workaround-only patches.
-   - No “looks-fixed” response without code-path evidence and tests.
-
-5. **Layer contracts are hard constraints.**
-   - Put behavior in the correct layer; do not leak business logic upward/downward.
-
-6. **Feature-level failures must be observable and non-blocking by default.**
-   - For optional features and auxiliary paths (skill loading, parsing helpers, side-channel callbacks, preview/index helpers), failure handling must be:
-     1) log structured error context,
-     2) skip/degrade safely,
-     3) keep core flow progressing.
-   - Do not convert feature-level read/parse failures into hard-stop unless explicitly required by product semantics.
-
-7. **No rollback-first debugging.**
-   - Default strategy is forward root-cause fix with evidence.
-   - Never use rollback/revert as the first-line “solution” for unknown behavior.
-   - Rollback is an explicit exception path requiring user approval and clear risk statement.
-
-8. **Worker-owned session/memory model is mandatory.**
-   - Session ownership must be explicit (`memoryOwnerWorkerId`) and deterministic.
-   - Scope keys are visibility filters, not ownership transfer.
-   - Cross-agent read is allowed; cross-worker write/execute is forbidden.
-   - Legacy session data must be backfilled/migrated idempotently.
-
-## 2) Layer model and ownership
-
-Reference: `references/layer-boundaries.md`.
-
-### Layer A — Core/Blocks (truth layer)
-- Paths (main): `src/blocks/**`, `src/runtime/**`, `src/orchestration/session-manager*`, core lifecycle primitives.
-- Responsibility:
-  - deterministic state transitions
-  - persistence truth
-  - queue/scheduler primitives
-  - tool execution primitives
-- Rule: no channel/UI-specific behavior here.
-
-### Layer B — Orchestration/App (policy layer)
-- Paths (main): `src/serverx/**`, `src/server/**`, `src/orchestration/**`, `src/agents/**` (role policy / workflow decisions).
-- Responsibility:
-  - compose blocks into workflows
-  - dispatch/recovery policy
-  - context rebuild policy
-  - control block + stop gate policy wiring
-- Rule: do not violate core invariants.
-
-### Layer C — Delivery/Consumer (presentation layer)
-- Paths (main): `src/ui/**`, channel bridge outputs, user-facing formatting/sanitization.
-- Responsibility:
-  - render progress
-  - sanitize output
-  - channel-specific UX
-- Rule: failures here cannot block Layer A/B completion.
-
-## 3) Skeleton design requirements
-
-1. Every task must have explicit lifecycle:
-   - `received -> dispatching/running -> waiting_* -> completed|failed|interrupted`
-2. Terminal state cannot be regressed by stale/out-of-order events.
-3. Session mapping must be deterministic by scope (system/project). V3: reviewer scope merged into system.
-4. Heartbeat/control sessions are isolated from normal user sessions.
-5. Persist-before-consume for critical state transitions.
-6. Session ownership must survive restart/reload (ownership migration is startup-safe and idempotent).
-
-## 4) Mandatory change workflow
-
-1. **Classify scope first**
-   - Which layer owns the change? (A/B/C)
-   - Which invariant can be broken if wrong?
-
-2. **Define acceptance before coding**
-   - Expected lifecycle transitions
-   - Expected recovery behavior on restart
-   - Expected observability (progress/error evidence)
-
-3. **Implement minimal root-cause diff**
-   - No broad unrelated refactor in same patch.
-
-4. **Add/adjust regression tests in same change**
-   - Include at least one failure-path or out-of-order/pathological case.
-
-5. **Run verification stack**
-   - Targeted tests for touched modules
-   - Type check
-   - session regression
-   - backend build pipeline
-
-6. **Deliver with evidence**
-   - what changed
-   - why root cause is fixed
-   - test outputs
-   - remaining risks/corner cases
-
- ## 5) Mandatory multi-layer test strategy (ENFORCED)
-
- Every feature or bugfix MUST be validated across ALL applicable test layers before being declared complete.
- Skipping any layer without explicit justification is a hard violation.
-
- ### Layer 1 — Unit tests (mandatory, no exceptions)
- Every new function, class method, error branch, and edge case must have a unit test:
- - Schema parsing: valid input, invalid input, missing fields, boundary values.
- - State transitions: every lifecycle path including failure and timeout.
- - Error handling: verify error messages, error types, side-effect rollback.
- - Edge cases: null/undefined/empty string/zero/negative/overflow.
-
- ### Layer 2 — Integration / functional tests (mandatory for cross-module features)
- When a feature spans multiple modules (tool + injector + facade), integration tests are required:
- - Module A output feeds Module B: verify the contract end-to-end.
- - Cross-module data flow: inject → dispatch → prompt composition.
- - Real subprocess execution where applicable (hook commands, shell spawning).
- - Persistence round-trip: create → persist → reload → verify.
-
- ### Layer 3 — Regression / orchestration tests (mandatory for lifecycle features)
- When a feature touches lifecycle, scheduling, or state machines:
- - Restart recovery: kill → reload → verify correct state resume.
- - Out-of-order events: stale events must not regress terminal state.
- - Concurrency: timer firing while another tick is running.
- - Retry / backoff: failure handling respects backoff limits.
-
- ### Layer 4 — Stress / boundary tests (mandatory for resource-management features)
- When a feature manages timers, processes, memory, or queues:
- - Concurrent timers firing simultaneously.
- - Hook output exceeding max_output_chars truncation.
- - Timeout enforcement (hook > timeout_ms must be killed).
- - Resource cleanup after failure (no zombie processes, no leaked timers).
- - Max limits (MAX_SYNC_SLEEP_MS, MAX_HOOK_TIMEOUT_MS, etc.).
-
- ### Layer 5 — E2E / daemon-level tests (mandatory for user-facing flows)
- When a feature is exposed to agents or end users:
- - Real daemon startup → tool call → verify response.
- - Real clock injector running → timer fires → hook executes → dispatch delivered.
- - Sleep async → clock timer created → wake injection arrives.
- - Cross-agent dispatch with real message routing.
-
- ### Execution order (MANDATORY)
- 1. Write Layer 1 (unit) tests FIRST, alongside the implementation.
- 2. Write Layer 2 (integration) tests for every cross-module boundary.
- 3. Write Layer 3 (regression) tests for every lifecycle/state feature.
- 4. Write Layer 4 (stress) tests for resource-managing features.
- 5. Write Layer 5 (E2E) tests for user-facing flows.
- 6. Run ALL layers before declaring the feature complete.
- 7. If ANY layer fails, fix the issue and re-run ALL affected layers.
-
- ### Anti-pattern (FORBIDDEN)
- - Declaring a feature "done" with only happy-path unit tests.
- - Skipping integration tests because "the unit tests passed".
- - Skipping stress tests because "the values are small".
- - Skipping E2E tests because "it worked locally".
- - Writing tests after being reminded — tests must be written as part of the implementation, not as an afterthought.
-
- ### Fast gate (while iterating)
- - `npm test -- <target-test-files>`
- - `npx tsc --noEmit`
-
- ### Session/runtime gate (required for session/lifecycle/dispatch changes)
- - `npm run test:session-regression`
-
- ### Full backend gate (required before handoff for runtime changes)
- - `npm run build:backend`
-
- ## 6) Change checklist (copy into task execution)
-
-Use template: `templates/change-checklist.md`.
-
-Required pass criteria:
-- [ ] Correct layer ownership
-- [ ] Core non-blocking invariant preserved
-- [ ] Restart/non-restart semantics validated
-- [ ] Terminal lifecycle non-regression validated
-- [ ] Failure observability validated
-- [ ] Regression tests added/updated
-- [ ] Verification commands passed
-
-## 7) Anti-patterns (forbidden)
-
-- Letting progress/reporting pipeline block core completion.
-- Treating restart as if in-flight kernel execution is still live.
-- Overwriting terminal lifecycle with stale event updates.
-- Dispatch failure hidden as success or no-op.
-- “Fixing” by adding fallback branches that bypass real constraints.
-- Swallowing errors with empty `catch {}` / silent ignore on critical or semi-critical paths.
-- Treating feature-level failures as either silent no-op or global hard-fail (both are wrong); use “log + skip + continue” unless the feature is mandatory.
-- Rollback-first handling without completed diagnosis and explicit user approval.
-
-## 7) Multi-Agent Collaboration Patterns (2026-04-06)
-
-### Architecture
-- **Two-level hierarchy**: System Agent → Project Agent (dispatch unchanged)
-- **Project Agent internal**: LLM tool-driven collaboration (借鉴 Codex Rust)
-- **AgentPath**: Layered paths `/root/project/explorer/worker-1`, supports relative `./child`, `../sibling`
-
-### LLM Tools (6 tools)
-- `agent.spawn`: Create child with role/history fork (FullHistory/LastNTurns/None)
-- `agent.wait`: Block until child completes
-- `agent.send_message`: Queue-only message (triggerTurn=false)
-- `agent.followup_task`: Message with triggerTurn=true (immediate execution)
-- `agent.close`: Release agent from registry
-- `agent.list`: List agents with path_prefix filter
-
-### Fork History Inheritance
-- `FullHistory`: Copy entire conversation
-- `LastNTurns`: Keep last N turns (default 5), truncate mid-turn not allowed
-- `None`: Fresh start, no history
-
-### CompletionWatcher Pattern
-- Background polling of child status
-- Auto-notify parent mailbox via `sendAgentCompletion`
-- Trigger on final status: completed/errored/shutdown
-
-### Key Files
-- `src/common/agent-path.ts`: Layered path system
-- `src/orchestration/agent-registry.ts`: Concurrency control + nickname allocation
-- `src/orchestration/session-fork.ts`: History inheritance
-- `src/orchestration/agent-collab-watcher.ts`: Completion watcher
-- `src/tools/internal/agent-collab-tools.ts`: 6 LLM tools
-- `src/blocks/mailbox-block/index.ts`: InterAgentCommunication + triggerTurn
-
-### Testing Requirements
-- Unit tests for each component (≥90% coverage)
-- Integration tests for cross-module flows
-- Orchestration tests for lifecycle/state transitions
-- E2E tests for full collaboration scenarios
-
-### Anti-patterns (FORBIDDEN)
-- Cross-worker session write (must use owner-only)
-- spawn without proper history fork mode
-- missing triggerTurn distinction
-- CompletionWatcher not started after spawn
-- AgentPath relative resolution errors
-
-## 8) Experience Lessons (2026-04-06)
-
-### API Response Parsing: Don't Use Serialized Text Fields
-
-**Problem**: OpenAI Responses API returns both `output_text` (serialized summary) and `output` (structured array). The `output_text` field includes ALL content types serialized as text, including tool calls formatted as `[tool_use id=...] name=...]`.
-
-**Wrong approach**:
-```rust
-// ❌ Using output_text directly
-let output_text = payload.get("output_text").as_str();  // Contains tool syntax!
-```
-
-**Correct approach** (参考 Codex upstream):
-```rust
-// ✅ Parse structured output array, filter by type
-for item in payload.get("output").as_array() {
-    if item.type == "message" {
-        output_text = item.content
-            .filter(c => c.type == "output_text")
-            .map(c => c.text)
-            .join("\n");
-    }
-    // function_call handled separately, not mixed into text
-}
-```
-
-**Lesson**: 
-- API convenience fields (`output_text`, `summary`, etc.) often serialize ALL content including control blocks
-- Always parse structured arrays and filter by `type` field
-- Tool call syntax should NEVER appear in user-facing channel output
-- Defense-in-depth: fix at kernel layer + filter at channel layer
-
-**Related files**:
-- `rust/kernel-model/src/lib.rs`: `parse_responses_payload`
-- `src/server/modules/agent-status-subscriber-text.ts`: `stripControlBlockForChannel`
-
-### Defensive Filtering at Multiple Layers
-
-When a bug affects user-facing output, apply fixes at BOTH:
-1. **Root cause layer** (kernel/parser) - fix the actual parsing logic
-2. **Output layer** (channel/delivery) - defensive regex filter as safety net
-
-This ensures even if root cause slips through, the final output is clean.
-
-### Scheduler Window Behavior: Don't Wake on Restart Outside Window
-
-**Problem**: HeartbeatScheduler and DailySummaryScheduler were logging "started" and triggering immediate ticks on every server restart, even when outside the configured execution window (e.g., 0:00-7:00). This caused wasteful idle checks and log noise.
-
-**Symptoms**:
-- `Daily summary scheduler started` logged multiple times per restart
-- Unnecessary tick() calls when no work exists
-- Log spam: 808 duplicate "started" entries in one day
-
-**Wrong approach**:
-```typescript
-// ❌ Always log "started" and run immediate tick
-start(): void {
-  this.logRuntime('Daily summary scheduler started', { ... });
-  void this.tick(); // Runs even outside window!
-}
-```
-
-**Correct approach**:
-```typescript
-// ✅ Check window first, only tick when in window
-start(): void {
-  const hour = new Date().getHours();
-  const inWindow = isHourInWindow(hour, this.windowStartHour, this.windowEndHour);
-  
-  if (inWindow) {
-    this.logRuntime('Scheduler started (in window)', { currentHour: hour });
-    void this.tick();
-  } else {
-    log.debug('Scheduler ready (outside window)', { currentHour: hour });
-    // No immediate tick, wait for window entry
-  }
-}
-```
-
-**Lesson**:
-- Windowed schedulers should check `isHourInWindow()` before startup actions
-- Immediate `tick()` only when actually in the execution window
-- Outside window: silent startup, debug-level log only
-- Prevents wasteful "no work to do" cycles on every restart
-
-**Related files**:
-- `src/server/modules/daily-summary-scheduler.ts`: start()
-- `src/serverx/modules/heartbeat-scheduler.impl.ts`: start()
-
-## 9) 日志系统规范（强制）
-
-### 核心原则
-
-- **所有模块必须接入日志系统**：禁止使用 `console.log`、`console.error` 等直接输出
-- **唯一真源**：所有日志必须通过 `src/core/logger` 的 `FingerLogger` 输出
-- **结构化日志**：日志必须是结构化的 JSON 格式，便于查询和分析
-- **Trace 模式**：关键流程支持 trace，记录完整执行上下文
-
-### 日志系统使用
-
-```typescript
-import { logger } from '../core/logger.js';
-
-// 每个模块创建独立的 ModuleLogger
-const log = logger.module('ModuleName');
-
-// 日志级别
-log.debug('详细调试信息', { key: 'value' });
-log.info('正常业务流程', { userId: 'xxx', action: 'login' });
-log.warn('潜在问题', { reason: 'retry', attempt: 2 });
-log.error('错误信息', error, { context: 'additional data' });
-log.fatal('致命错误', error, { critical: true });
-
-// Trace 模式（关键流程）
-const traceId = log.startTrace();
-log.info('开始处理请求', { traceId });
-// ... 执行逻辑 ...
-log.endTrace(traceId);  // 自动写入快照文件
-```
-
-### Trace 链路完整覆盖（2026-04-06）
-
-关键路径已全部接入 trace 模式：
-
-```
-dispatchTask → executeDispatch → sendToModule → callTool
-```
-
-| 模块 | Trace 功能 | 关键日志点 |
-|------|-----------|-----------|
-| `AgentRuntimeBlock.dispatchTask` | ✅ startTrace + endTrace 包裹 | dispatch 入口 + 早期返回 |
-| `AgentRuntimeBlock.executeDispatch` | ✅ traceId 参数传递 | blocking/non-blocking 分支 |
-| `AgentRuntimeBlock.toDispatchPayload` | ✅ metadata.traceId | payload 写入 traceId |
-| `AgentRuntimeBlock.drainDispatchQueue` | ✅ 独立 trace | queued dispatch 独立上下文 |
-| `MessageHub.sendToModule` | ✅ 提取 traceId + debug log | routing to output/input |
-| `RuntimeFacade.callTool` | ✅ 提取 traceId + info/error log | tool_call/result/error |
-
-### 配置位置
-
-`~/.finger/config/logging.json`:
-```json
-{
-  "globalLevel": "info",
-  "moduleLevels": {
-    "AgentRuntimeBlock": "debug",
-    "MessageHub": "debug",
-    "RuntimeFacade": "debug",
-    "CompletionWatcher": "debug"
-  },
-  "snapshotMode": true,
-  "snapshotModules": ["AgentRuntimeBlock", "MessageHub", "RuntimeFacade"]
-}
-```
-
-### Trace 输出路径
-
-- **实时日志**: `~/.finger/logs/daemon.log`（搜索 `[traceId=xxx]`）
-- **快照文件**: `~/.finger/logs/snapshots/<traceId>.json`（完整生命周期）
-
-### 使用方式（问题回溯）
-
-1. 从 `daemon.log` 搜索 `[traceId=xxx]`
-2. 查找对应 `snapshots/xxx.json`（完整 trace 生命周期）
-3. Trace 覆盖完整 dispatch → execute → sendToModule → callTool 链路
-
-### Scheduler 窗口行为优化
-
-- **DailySummaryScheduler**: `start()` 检查 `isHourInWindow()`，非窗口期不触发 `tick()`
-- **HeartbeatScheduler**: 同样逻辑，避免非窗口期重复启动
-- **防止**: 非窗口期重复启动浪费 token
-
-### 禁止事项（强制）
-
-- **禁止**使用 `console.log`、`console.error`、`console.warn`（仅 `cli/init.ts` 和 `logger/index.ts` 允许）
-- **禁止**在生产代码中直接写入文件输出日志
-- **禁止**在日志中记录敏感信息（密码、token等）
-- **禁止**在循环中高频打日志（使用采样或聚合）
-- **禁止**缺失 `data` context 在关键路径日志
-
-### Console.* 检查结果（合规）
-
-- `logger/index.ts`: 8 处（logger 失败时的 fallback，允许）
-- `cli/init.ts`: 22 处（用户 CLI 输出，允许）
-- 其他 runtime 文件: 0 处（已全部清理）
-
-
----
-
-## Section 10: Context Compact 设计（2026-04-07）
-
-### 核心原则（认知修正 2026-04-07）
-
-1. **Deterministic Digest**：不调用 LLM，直接截断 + 提取工具调用
-2. **预算管理**：contextHistory > 20K 时移除最旧的 digest
-3. **Compact 与 Rebuild 是同一操作**（关键认知修正）:
-   - ❌ 错误理解：compact 和 context rebuild 是两件事，先 compact 再想办法触发 rebuild
-   - ✅ 正确理解：compact 的目的就是为了 rebuild context，它们是一个原子操作
-   - compact：将 currentHistory 压缩成 digest，写入 compact-memory.jsonl
-   - rebuild：基于新指针（contextHistory + currentHistory）重建上下文窗口
-   - **必须在同一函数内完成**，确保 Kernel 拿到重建后的上下文
-4. **Projection 必须是两段连续区**（2026-04-09 回归修正）:
-   - `historical_memory/compactDigest=true` 必须整理成前缀连续段，`current_history` 必须是后缀连续段
-   - 不能直接信任 Kernel `api_history` 或旧 session 的自然顺序；projection 持久化前、startup load 时都要做顺序归一化并重算 pointers
-
-### Compact 完整流程
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 1. Turn-level Digest（finish_reason = stop）                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│   chat-codex-module.ts                                                   │
-│   ├── finishReason === 'stop'                                            │
-│   ├── controlBlock.tags → 模型打的 tags                                  │
-│   ├── digestProvider(sessionId, digestMessage, tags, agentId, mode)      │
-│   │   └── appendDigestForTurn → 写入 compact-memory.jsonl               │
-│   └── digest_block { turn_digest: true, tags: [...] }                   │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 2. Context Compact（85% 触发 或 手动触发）                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│   RuntimeFacade.maybeAutoCompact / compressContext({ force: true })      │
-│   ├── 读取 currentHistory（context-ledger.jsonl 窗口）                   │
-│   ├── 生成 compact_block（多条消息压缩）                                  │
-│   ├── 清空 currentHistory                                                 │
-│   └── 预算管理（contextHistory > 20K 时移除最旧的）                       │
-���─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 3. Context Rebuild（Kernel 启动时）                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│   Kernel 读取：                                                           │
-│   ├── compact-memory.jsonl [contextHistoryStart..End]                    │
-│   ├── context-ledger.jsonl [currentHistoryStart..End]                    │
-│   └── 合并 → 完整上下文（在预算内）                                        │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### 关键文件
-
-| 文件 | 作用 |
-|------|------|
-| `context-history-compact.ts` | `appendDigestForTurn` / `compactSessionHistory` |
-| `session-manager.ts` | `appendDigest` / `compressContext` |
-| `runtime-facade.ts` | `maybeAutoCompact` / `compressContext` |
-| `chat-codex-module.ts` | `digestProvider` 调用（finish_reason=stop） |
-
-### 预算参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `CONTEXT_HISTORY_BUDGET` | 20000 | contextHistory 最大 tokens |
-| `AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT` | 85 | 自动压缩触发阈值 |
-| `AUTO_CONTEXT_COMPACT_COOLDOWN_MS` | 60000 | 自动压缩冷却时间 |
-| `AUTO_CONTEXT_COMPACT_TIMEOUT_MS` | 30000 | 压缩超时时间 |
-
-### 强制压缩
-
-```typescript
-// 手动触发强制压缩（忽略 threshold）
-await runtime.compressContext(sessionId, { trigger: 'manual' });
-
-// force=true 时跳过 threshold 检查
-```
-
-### 反模式
-
-1. ❌ **不要在 compact 时调用 LLM**：使用 deterministic digest
-2. ❌ **不要忘记 force 参数**：手动压缩时必须 force=true
-3. ❌ **不要在 turn_digest 中包含 source_range**：只有 compact_block 才有
-4. ❌ **不要把 compact 和 rebuild 分开**：compact 完成后必须立即 rebuild，它们是同一操作的两个阶段
-5. ❌ **不要期望 Kernel 自动获取新上下文**：compact 后必须主动调用 context_builder.rebuild 或返回新上下文给 Kernel
-
----
-
-## Section 11: 铁律与强制规范
-
-### 1. 全局编译安装（强制）
-
-**每次修改代码后必须执行全局编译安装，不能用本地版本**：
+Typical commands:
 
 ```bash
-npm run build:install
-npm run daemon:start
+pnpm vitest run tests/unit/server/channel-*.test.ts tests/unit/server/dispatch-session-selection.test.ts
+pnpm vitest run tests/integration/bridges/*.test.ts
+pnpm vitest run tests/e2e/gateway-bridge-*.test.ts
 ```
 
-**禁止**：
-- ❌ 直接运行 `node dist/server/index.js`（本地版本）
-- ❌ 跳过 `build:install` 步骤
-
-**原因**：全局安装的版本才是生产环境使用的版本，本地 dist 可能与全局版本不一致。
+### F. Type gate
+Use the smallest suitable TS gate for the change. If backend build is already run, do not duplicate a weaker TS-only gate.
 
 ---
 
-### 2. 系统消息前缀规范
+## 5) Repo-specific invariants worth remembering
 
-**通知来源区分**：
+### 5.1 Core must never be blocked by delivery failures
+If a bridge / channel / presentation path fails:
+1. persist core result first
+2. expose failure explicitly
+3. do not block core completion or recovery
 
-| 来源 | 前缀 | 示例 |
-|------|------|------|
-| **系统自动发送** | `[system]` | `[system] Daemon 已启动` |
-| **Agent 推理回复** | `{AgentName}:` | `SystemBot: E2E mailbox ping 已收到` |
+### 5.2 Worker-owned session model is strict
+Follow `AGENTS.md` as the hard truth.
 
-**判断标准**：
-- 系统自动发送：不需要 agent 推理，代码直接执行
-- Agent 推理回复：需要 agent 调用 kernel 推理后生成
+Practical rule:
+- session ownership is not transferred by visibility scope
+- cross-agent read is allowed
+- cross-worker write / execute is not
+- fixes must preserve deterministic session mapping
 
-**示例**：
-```
-[system] HeartbeatScheduler 已启动
-[system] Mailbox ping 成功：latency=2ms
-SystemBot: 收到，处理中…
-SystemBot: E2E mailbox ping 已收到。通路正常，无待办。
-```
+### 5.3 Context history has one canonical implementation
+For context-history work, the canonical paths are:
+- runtime core: `src/runtime/context-history/**`
+- digest write path: `src/runtime/context-history-compact.ts`
+- runtime session truth: `Session.messages`
+- explicit tool name: `context_history.rebuild`
 
----
+Rules:
+- do **not** reintroduce `context_builder.*` as the primary path
+- do **not** split compact and rebuild into competing flows
+- do **not** add a second history projection pipeline in agent / bridge / route layers
+- if behavior changes, update the owning design doc under `docs/design/`
 
-### 3. Mailbox Ping 两层机制
+### 5.4 Channel bugs must be debugged inside-out
+Never start with “real QQBot must be broken”.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. 链路层 Ping (Dry-Run) - 肌肉记忆                          │
-├─────────────────────────────────────────────────────────────┤
-│ - 频率：每轮心跳                                              │
-│ - 方式：底层直接读取 mailbox 状态                             │
-│ - Agent 无感知：不 dispatch，不通知                           │
-│ - 日志：Debug 级别，避免打爆日志                              │
-│ - 前缀：无（用户看不到）                                      │
-└─────────────────────────────────────────────────────────────┘
+Debug order:
+1. internal route logic
+2. module coordination
+3. bridge / external service
 
-┌─────────────────────────────────────────────────────────────┐
-│ 2. 真实 Mailbox Check - 有任务才 dispatch                     │
-├─────────────────────────────────────────────────────────────┤
-│ - 条件：pending > 0 + agent 空闲 + 到了检查时间               │
-│ - 方式：dispatch 真实任务给 agent                            │
-│ - 前缀：`SystemBot:` (agent 推理回复)                        │
-└─────────────────────────────────────────────────────────────┘
+### 5.5 Avoid stale exact facts in the skill
+Do not store fragile facts here such as:
+- exact `console.*` counts
+- exact line counts
+- “current ports in use” snapshots
+- temporary migration state
 
-┌─────────────────────────────────────────────────────────────┐
-│ 3. E2E 测试 - 定期验证（每周）                                │
-├─────────────────────────────────────────────────────────────┤
-│ - 条件：距离上次 E2E 测试 >= 7 天                            │
-│ - 方式：dispatch 真实业务任务给 agent                        │
-│ - 前缀：`SystemBot:` (agent 推理回复)                        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**关键文件**：
-- `src/server/modules/heartbeat-mailbox-ping.ts` - 底层 ping 函数
-- `src/server/modules/heartbeat-helpers.ts` - 集成 ping dry-run
+Those facts expire quickly and corrupt the skill.
 
 ---
 
-### 4. 进度更新去重优化
+## 6) High-value anti-patterns
 
-**改进点**：
-- `buildReportKey` 移除文件路径（避免相同类型的工具调用被认为是不同的）
-- `extractToolDetail` 截断到 80 字符（避免过长导致视觉重复）
-- `LOW_VALUE_TOOLS` 包含 `mailbox.status/list/read/ack`（不在进度更新中显示）
-
----
-
-### 5. Context Compact 设计（完整）
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Session 结构                                                 │
-├─────────────────────────────────────────────────────────────┤
-│ contextHistory (compact-memory.jsonl)                       │
-│ - 预算：20,000 tokens                                       │
-│ - 移除策略：超过 20K 时移除最旧的 digest                     │
-│                                                              │
-│ currentHistory (context-ledger.jsonl)                       │
-│ - 无限制（可以无限增长）                                      │
-│ - 触发压缩条件：contextUsagePercent >= 85%                  │
-└────────────────��────────────────────────────────────────────┘
-
-Compact 触发时机：
-1. finish_reason=stop 时自动生成 digest（每轮）
-2. contextUsagePercent >= 85% 时自动压缩
-3. 手动命令：<##@system:compact##>
-```
-
-**关键文件**：
-- `src/runtime/context-history-compact.ts` - 确定性 digest 生成
-- `src/server/modules/heartbeat-mailbox-ping.ts` - 链路层 ping
-
-## Section 11: MemPalace 记忆管理流程（2026-04-07）
-
-### 核心原则
-
-1. **写入路径**：
-   - 新记忆/经验 → 直接写入 `MEMORY.md`（仓库根目录）
-   - 设计文档 → 直接落盘 `docs/design/` 或 `docs/reference/`
-   - MemPalace 自动挖掘 `MEMORY.md` + `docs/` 到知识库
-
-2. **查询路径**：
-   - 架构查询 → 使用 `mempalace search "关键词"`
-   - 上下文唤醒 → 使用 `mempalace wake-up`
-   - 禁止手动 grep 大量文件查找知识（效率低）
-
-3. **MemPalace 常用命令**：
-   ```bash
-   # 初始化/挖掘（首次）
-   mempalace --palace ~/.mempalace/finger init /Volumes/extension/code/finger --yes
-   mempalace --palace ~/.mempalace/finger mine /Volumes/extension/code/finger
-   
-   # 查询架构知识
-   mempalace --palace ~/.mempalace/finger search "FingerChatEngine"
-   mempalace --palace ~/.mempalace/finger search "multi-protocol"
-   
-   # 上下文唤醒（L0 + L1，约 600-900 tokens）
-   mempalace --palace ~/.mempalace/finger wake-up
-   
-   # 压缩记忆（AAAK Dialect，约 30x 压缩）
-   mempalace --palace ~/.mempalace/finger compress
-   
-   # 状态检查
-   mempalace --palace ~/.mempalace/finger status
-   ```
-
-4. **记忆更新触发点**：
-   - Epic 完成 → 写入 MEMORY.md + `mempalace mine`
-   - 关键架构决策 → 写入 `docs/design/` + `mempalace mine`
-   - Bug 修复经验 → 写入 MEMORY.md Experience Lessons 部分
-   - 反模式发现 → 写入 MEMORY.md Anti-patterns 部分
-
-5. **禁止事项**：
-   - 禁止记忆写入 `memory/` 目录（已废弃，MemPalace 自动管理）
-   - 禁止重复写入同一知识点（先 search 确认是否已有）
-   - 禁止跳过 `mempalace mine`（新文档不会自动入库）
+Forbidden patterns for this repo:
+- fixing a Layer A truth problem in Layer C presentation code
+- duplicating persistence truth in orchestration or bridges
+- adding fallback branches to hide a real lifecycle / dispatch error
+- claiming “done” with only happy-path tests
+- reporting completion without command output or direct evidence
+- introducing a second compact / rebuild / session-recovery implementation
+- keeping obsolete names or commands in the skill after the codebase has moved on
 
 ---
 
-## Section 11: 内存管理红线（Memory Redlines）
+## 7) Handoff requirements
 
-### 核心原则
+Before handoff, report:
+1. files changed
+2. why those files are the owning layer
+3. validation commands actually run
+4. remaining risks / skipped checks
 
-**所有内存中的数据结构必须有硬上限**。防止内存泄露导致进程OOM。
-
----
-
-### 禁止事项
-
-1. **禁止无上限的 Map/Set**
-   ```typescript
-   // ❌ 错误：无限增长的 Map
-   const cache = new Map<string, Data>();
-   
-   // ✅ 正确：有硬上限 + TTL 清理
-   const cache = new Map<string, { data: Data; ts: number }>();
-   const MAX_ENTRIES = 1000;
-   const TTL_MS = 10 * 60 * 1000; // 10 分钟
-   
-   // 定期清理
-   setInterval(() => {
-     for (const [k, v] of cache.entries()) {
-       if (Date.now() - v.ts > TTL_MS) cache.delete(k);
-     }
-     // 硬上限：超过 MAX_ENTRIES 删除最旧的 10%
-     if (cache.size > MAX_ENTRIES) {
-       const keys = Array.from(cache.keys()).slice(0, Math.floor(MAX_ENTRIES * 0.1));
-       for (const k of keys) cache.delete(k);
-     }
-   }, TTL_MS);
-   ```
-
-2. **禁止全量读取大文件**
-   ```typescript
-   // ❌ 错误：50MB 文件全量加载
-   const content = await fs.readFile(ledgerPath, 'utf-8');
-   const entries = content.split('\n').map(JSON.parse);
-   
-   // ✅ 正确：流式读取或按需读取
-   // 方案 A：tail -n 读取最后 N 行
-   // 方案 B：使用 readline 逐行读取
-   ```
-
-3. **禁止在内存中持有完整的上下文历史**
-   - Session.messages 必须是快照（projection），不是全量历史
-   - 全量历史存储在 Ledger（磁盘）
-   - 内存中的 Session 只保留指针或最近 N 条
+Use `templates/change-checklist.md` when the task is non-trivial.
 
 ---
 
-### 硬上限参数
+## 8) Skill maintenance rule
 
-| 数据结构 | 文件 | 上限 | TTL |
-|---------|------|------|-----|
-| `lastQueuedSystemDispatchPushByKey` | agent-status-subscriber-handlers.impl.ts | 无上限（TTL清理） | 10min |
-| `dispatchLedgerDedup` | event-forwarding.impl.ts | 1000 | 10min |
-| `controlHookActionDedup` | event-forwarding.impl.ts | 1000 | 10min |
-| `sessionEnvelopeMap` | agent-status-subscriber.impl.ts | 无上限（TTL清理） | 配置项 |
-| `sessions` Map | session-manager.ts | 无上限 | 需要添加 |
+Update this skill only when the repo gains a **stable, reusable execution rule**.
 
----
+Do not append:
+- long historical postmortems
+- subsystem handbooks
+- exact temporary metrics
+- one-off migration notes
+- duplicated AGENTS rules
 
-### 必须实施的清理机制
-
-1. **TTL 清理**：定期删除过期的 key
-2. **硬上限**：超过上限时删除最旧的 10%
-3. **手动清理**：session 结束时主动 delete
-
----
-
-### 相关文件
-
-- `src/serverx/modules/agent-status-subscriber-handlers.impl.ts`
-- `src/serverx/modules/event-forwarding.impl.ts`
-- `src/orchestration/session-manager.ts`
-- `src/serverx/modules/progress-monitor.impl.ts`
-
-## Task Mode (Task-Driven Execution)
-
-When implementing features related to task-driven execution:
-- **Stop gate logic**: `finish_reason=stop` alone is not sufficient to stop reasoning when there's an active non-blocked task
-- **Task modes**:
-  - `default`: Normal stop behavior
-  - `light`: Current epic must complete before stopping (non-blocked tasks prevent stop)
-  - `forever`: Continue as long as there are any active tasks
-- **bd integration**: Complex tasks must use bd epic as the source of truth; session context is only a read-only view of current epic
-- **Periodic tasks**: Use `periodicKey` for uniqueness; on trigger, replace previous unfinished task with new one
-- **Epic selection**: When current epic closes, auto-pick next by priority ASC then updatedAt DESC
-
-## Session Recovery Anti-patterns
-
-- Never recover sessions based on `projectTaskState` string alone → always validate against bd epic state
-- Clean up test-polluted sessions on startup to prevent ghost session storms
-- Remove completed tasks from session context immediately → prevents context poisoning
-- `update_plan` is internal non-persistent view → never use for recovery decisions
-
-## Section 12: Always-On 模块化架构与热升级（2026-04-11）
-
-### 核心架构原则
-
-#### 1. Core/Extension 分层（强制）
-
-**Core 层**（完整升级，重启生效）：
-- `runtime-facade`, `session-manager`, `protocol-event-builder`, `message-hub`
-- `agent-runtime-block`, `websocket-block`, `logger`, `event-bus`
-- `gateway-manager`, `tool-registry`, `core-registry`
-
-**Extension 层**（热升级，无需重启）：
-- `finger-*-agent`（所有 Agent 业务模块）
-- `channel-bridge-*`（渠道适配）
-- `inputs`, `outputs`, 可选工具扩展
-
-#### 2. 双槽位机制（强制）
-
-每个 Extension 模块维护两个槽位：
-- **Active 槽位**：当前运行版本
-- **Standby 槽位**：备用版本（升级目标或降级来源）
-
-升级流程：
-```
-1. 新版本安装到 standby 槽位
-2. 健康检查验证 standby 版本
-3. 验证通过 → 槽位切换（standby → active）
-4. 旧版本保留在 standby（可降级）
-```
-
-#### 3. Runtime 主备规则（强制）
-
-- Runtime 只有一个实例（单进程）
-- 本地切主/切备 → 写入 `~/.finger/runtime/runtime-role.json` → 重启生效
-- 默认启动为 `active`
-- 切备后重启保持 `standby`（不自动变 active）
-
-### 升级测试要求（MANDATORY）
-
-#### 测试层次（强制）
-
-| 升级类型 | 必须通过的测试 |
-|----------|----------------|
-| Extension 热升级 | 单元 + 集成 + 真实升级演练 |
-| Core 完整升级 | 全量回归 + daemon 重启验证 |
-| 降级/回滚 | 回滚点恢复 + 功能验证 |
-
-#### 真实演练必须包含
-
-1. **升级包准备**：两个版本号不同的包（内容相同，验证流程）
-2. **升级执行**：`myfinger upgrade run <module> --source <dist-dir> --version <target>`
-3. **槽位切换验证**：`ActiveStandbyManager` 日志显示 `Module slots switched`
-4. **Daemon 稳定性**：全程保持 `running on port 9999`
-5. **回滚验证**：`myfinger upgrade rollback <module> -y` + 文件恢复确认
-6. **回滚点管理**：`list` 显示正确，rollback 后数量减少
-
-#### 反模式（FORBIDDEN）
-
-- ❌ Mock 测试替代真实升级演练（不能验证文件系统、进程、daemon 交互）
-- ❌ `--source` 指向 .tgz 文件（必须是解压后的 dist 目录）
-- ❌ 跳过健康检查直接 commit
-- ❌ 升级失败后不回滚（必须自动回滚或保留回滚点）
-
-### CLI 命令标准流程
-
-```bash
-# 1. 状态检查
-myfinger upgrade status
-myfinger daemon status
-
-# 2. Extension 热升级
-myfinger upgrade run finger-project-agent \
-  --source /path/to/v0.1.362-extracted/package/dist \
-  --version 0.1.362
-
-# 3. 验证升级结果
-myfinger upgrade list finger-project-agent
-
-# 4. 回滚（如需要）
-myfinger upgrade rollback finger-project-agent -y
-
-# 5. Core 完整升级（需确认）
-myfinger upgrade core --yes  # 会重启 daemon
-```
-
-### 关键文件位置
-
-```
-~/.finger/runtime/
-├── runtime-role.json              # Runtime 角色
-├── module-slots/*.json            # 模块槽位状态
-└── rollback/extension/*/          # 回滚点
-
-src/orchestration/
-├── active-standby-manager.ts      # 槽位管理
-├── upgrade-engine.ts              # 升级事务引擎
-├── upgrade-package-manager.ts     # 包获取与校验
-├── pre-upgrade-health-check.ts    # 升级前检查
-├── rollback-manager.ts            # 回滚点管理
-└── module-layers.ts               # 分层声明
-
-tests/integration/full-upgrade-pipeline.test.ts  # 集成测试
-```
-
-### 常见问题与修复
-
-| 问题 | 原因 | 解决 |
-|------|------|------|
-| `ENOTDIR: not a directory` | `--source` 指向 .tgz | 解压后指向 dist 目录 |
-| `-v` 参数被覆盖 | commander 全局 `-v` 冲突 | 使用 `--version` 长格式 |
-| 回滚点数量不减少 | rollback 消耗最新点 | 正常行为，检查剩余数量 |
-| Daemon 重启后不在线 | Core 升级未完成 | 检查 `myfinger daemon status` |
-
-### 升级失败处理
-
-```bash
-# 升级失败 → 自动回滚（UpgradeEngine 默认行为）
-# 如手动干预：
-
-# 1. 查看回滚点
-myfinger upgrade list <module>
-
-# 2. 手动回滚到指定版本
-myfinger upgrade rollback <module> -y
-
-# 3. 清理失败的升级缓存
-rm -rf ~/.finger/upgrade-cache/<module>/failed-*
-```
-
-### 下一步扩展（Phase 3+）
-
-- Worker 进程级隔离（VM 沙箱）
-- npm registry 自动拉取
-- 心跳计数器重置机制
-- 升级进度 UI 可视化
-
-
-### Channel/External Interface Testing: Inside-Out Methodology (MANDATORY)
-
-For any channel (QQBot, WebSocket, API endpoint) or external interface, testing MUST follow inside-out layers:
-
-#### Layer 1: Internal Route Logic (Unit Tests)
-**Purpose**: Validate internal routing, dispatch, and response logic WITHOUT external service dependency.
-
-**What to test**:
-- Channel message routing to correct targetAgent
-- Dispatch target normalization (alias removal, moduleId mapping)
-- Session context resolution (channelId → projectPath → targetAgent)
-- Error handling and fallback paths
-- Input validation and payload transformation
-- Progress/reply message construction
-
-**Test location**: `tests/unit/server/channel-*.test.ts`, `tests/unit/server/routes/*.test.ts`
-
-**Mock strategy**:
-- Mock external channel adapter (sendMessage, WebSocket)
-- Mock MessageHub/dispatch (return controlled results)
-- Mock session manager (return known sessions)
-- Use in-memory event bus
-
-**Validation**:
-```bash
-pnpm vitest run tests/unit/server/channel-*.test.ts --reporter=verbose
-```
-
-**Required assertions**:
-- Correct targetAgentId is resolved (no legacy aliases like "finger-orchestrator")
-- Correct moduleId is used for dispatch
-- Session context is correctly applied
-- Error cases return proper error messages
-- No dispatch to unregistered modules
-
-#### Layer 2: Module Integration (Integration Tests)
-**Purpose**: Validate module-to-module interaction with real internal services but mocked external channels.
-
-**What to test**:
-- ChannelBridgeHub + MessageHub + AgentRuntimeBlock coordination
-- Session persistence across dispatch lifecycle
-- Progress update propagation through event bus
-- Dispatch queue and retry logic
-- Recovery from partial failures
-
-**Test location**: `tests/integration/bridges/*.test.ts`, `tests/integration/server/*.test.ts`
-
-**Mock strategy**:
-- Mock external channel (QQBot WebSocket, API client)
-- Use real MessageHub, SessionManager, EventBus
-- Use real AgentRuntimeBlock with mock kernel
-
-**Validation**:
-```bash
-pnpm vitest run tests/integration/bridges/channel-*.test.ts --reporter=verbose
-```
-
-#### Layer 3: End-to-End with Real External Service (E2E Tests)
-**Purpose**: Validate complete message flow through real channel service.
-
-**What to test**:
-- Gateway bridge startup and WebSocket connection
-- Message send → dispatch → kernel → response → reply cycle
-- Progress updates delivered to channel
-- Timeout and retry with real network conditions
-- Service restart and recovery
-
-**Test location**: `tests/e2e/gateway-bridge-*.test.ts`
-
-**Prerequisites**:
-- External service available (QQBot appId/clientSecret valid)
-- Gateway bridge process running
-- Daemon healthy
-
-**Validation**:
-```bash
-pnpm vitest run tests/e2e/gateway-bridge-*.test.ts --reporter=verbose
-```
-
-#### Inside-Out Validation Sequence (MANDATORY)
-
-For any channel-related change or bug fix:
-
-1. **FIRST**: Run Layer 1 unit tests
-   - If failed → fix internal routing logic first
-   - Do NOT proceed to E2E until Layer 1 passes
-
-2. **SECOND**: Run Layer 2 integration tests
-   - If failed → fix module coordination logic
-   - Do NOT proceed to E2E until Layer 2 passes
-
-3. **THIRD**: Run Layer 3 E2E tests
-   - Only after Layer 1 + 2 both pass
-   - E2E failures indicate external service or deployment issues
-
-4. **Report**: Include ALL THREE layers' test results in completion report
-
-#### Required Test Evidence for Channel Bugs
-
-When fixing a channel bug (e.g., "QQBot message not routed correctly"), provide:
-
-```
-=== Layer 1: Unit Tests ===
-pnpm vitest run tests/unit/server/channel-bridge-hub-route.test.ts
-Result: X passed / Y failed
-
-=== Layer 2: Integration Tests ===
-pnpm vitest run tests/integration/bridges/channel-*.test.ts
-Result: X passed / Y failed
-
-=== Layer 3: E2E Tests ===
-pnpm vitest run tests/e2e/gateway-bridge-qqbot.test.ts
-Result: X passed / Y failed
-```
-
-If Layer 1 fails, the bug is internal routing logic.
-If Layer 2 fails, the bug is module coordination.
-If Layer 3 fails, the bug is external service or deployment.
-
-#### Test File Structure Example
-
-```
-tests/
-├── unit/
-│   └── server/
-│       ├── channel-bridge-hub-route.test.ts      # Layer 1: routing logic
-│       ├── channel-context-manager.test.ts        # Layer 1: context resolution
-│       └── routes/message-*.test.ts               # Layer 1: message handling
-├── integration/
-│   └── bridges/
-│       ├── channel-bridge-hub-integration.test.ts # Layer 2: module coordination
-│       └── session-persistence.test.ts            # Layer 2: session lifecycle
-├── e2e/
-│   └── gateway-bridge-qqbot.test.ts               # Layer 3: real QQBot flow
-```
-
-#### Anti-patterns (FORBIDDEN)
-
-- **"Skip unit tests, just test with real QQBot"** → External service hides internal bugs
-- **"Unit tests passed, must be external issue"** → Must also pass integration tests
-- **"E2E is too hard, unit tests are enough"** → E2E validates deployment reality
-- **"Fix first, add tests later"** → Tests FIRST, then claim fix
-- **"Report without test evidence"** → No verbal claim; show test output
-
+If a new rule is subsystem-specific, put it in `docs/design/` or a dedicated skill instead.

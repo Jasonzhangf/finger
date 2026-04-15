@@ -116,7 +116,7 @@ export function classifyToolCall(toolName: string, input?: unknown): ToolCategor
 
   if (['apply_patch', 'write_stdin'].includes(toolName)) return '读写';
 
-  if (/^(agent\.|context_ledger|context_builder|memsearch|update_plan|clock\.|user\.|bd\b)/.test(toolName)) return '工具';
+  if (/^(agent\.|context_ledger|context_history|memsearch|update_plan|clock\.|user\.|bd\b)/.test(toolName)) return '工具';
 
   return '其他';
 }

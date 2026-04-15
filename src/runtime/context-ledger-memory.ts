@@ -1328,11 +1328,15 @@ function buildReplacementHistoryFromTaskBlocks(blocks: LedgerTaskBlockInternal[]
       .find((message) => message.role === 'assistant')
       ?.content ?? '';
     const toolCalls = buildToolCallsDigest(block.entries);
+    const eventKeyTools = block.entries
+      .map((entry) => extractToolDigestEventFromEntry(entry)?.toolName?.trim() ?? '')
+      .filter((name) => name.length > 0);
     const fallbackKeyTools = block.taskBlock.messages
       .map((message) => extractToolNameFromTaskMessage(message))
-      .filter((name) => name.length > 0 && isImportantToolForDigest(name));
+      .filter((name) => name.length > 0);
     const keyTools = Array.from(new Set([
-      ...toolCalls.map((item) => item.tool).filter((name) => name.length > 0 && isImportantToolForDigest(name)),
+      ...eventKeyTools,
+      ...toolCalls.map((item) => item.tool).filter((name) => name.length > 0),
       ...fallbackKeyTools,
     ]));
     const taskId = block.id.startsWith('task-') ? block.id : `task-${block.startTime}`;
@@ -1466,7 +1470,7 @@ function resolveTaskBlockVisibility(
   blockId: string,
   runtimeContext?: ContextLedgerMemoryInput['_runtime_context'],
 ): LedgerTaskBlockSearchResult['visibility'] {
-  const builder = runtimeContext?.context_builder;
+  const builder = runtimeContext?.context_history;
   if (!builder) return 'unknown';
   if (builder.working_set_block_ids?.includes(blockId)) return 'working_set';
   if (builder.historical_block_ids?.includes(blockId)) return 'historical_memory';
@@ -1478,7 +1482,7 @@ function buildContextBridge(
   taskBlocks: ContextLedgerMemoryQueryResult['task_blocks'],
   runtimeContext?: ContextLedgerMemoryInput['_runtime_context'],
 ): ContextLedgerMemoryQueryResult['context_bridge'] {
-  const builder = runtimeContext?.context_builder;
+  const builder = runtimeContext?.context_history;
   return {
     searched_full_ledger: true,
     total_slots: totalSlots,

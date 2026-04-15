@@ -32,7 +32,7 @@ digest 是历史压缩后的可见表示，不是第二份运行时实现。
 |---|---:|---|
 | 正常对话未超限 | 否 | - |
 | 正常对话超限 | 是 | `overflow` |
-| 模型显式调用 `context_builder.rebuild` | 是 | `topic` |
+| 模型显式调用 `context_history.rebuild` | 是 | `topic` |
 | provider overflow / route overflow retry | 是 | `overflow` |
 
 说明：
@@ -82,7 +82,7 @@ digest corpus
 - `kernel-agent-base.ts`
 - `runtime-facade.ts`
 - `message-route-execution.ts`
-- `context_builder.rebuild tool`
+- `context_history.rebuild tool`
 - `finger-role-modules.impl.ts`
 
 它们允许做的事情只有：

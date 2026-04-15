@@ -76,7 +76,7 @@ This document defines the prompt and request-construction contract for chat-code
 
 ## 5.2) Context Rebuild On-Demand Tool
 
-- Tool: `context_builder.rebuild`
+- Tool: `context_history.rebuild`
 - Purpose: when the model detects a topic switch or mixed-thread history noise, it can proactively trigger a rebuild for the current session using the latest user prompt as relevance signal.
 - Contract:
   - Input: `current_prompt`, optional `mode`, optional `target_budget`
@@ -86,7 +86,7 @@ This document defines the prompt and request-construction contract for chat-code
   - Canonical source of truth is still ledger; rebuild output is a dynamic view.
   - Runtime strategy is **on-demand-first**:
     - default history path uses raw session order (no automatic rebuild)
-    - when `context_builder.rebuild` is called, rebuilt history is staged and applied on the next turn history assembly once.
+    - when `context_history.rebuild` is called, rebuilt history is staged and applied on the next turn history assembly once.
 
 ## 6) Validation
 

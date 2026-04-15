@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { getContextWindow, loadContextBuilderSettings } from '../../core/user-settings.js';
+import { getContextWindow, loadContextHistorySettings } from '../../core/user-settings.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { forceRebuild, tokenizeUserInput } from '../../runtime/context-history/index.js';
 import { hasSessionLock } from '../../runtime/context-history/lock.js';
@@ -8,11 +8,11 @@ import type { SessionMessage } from '../../orchestration/session-types.js';
 import type { InternalTool, ToolExecutionContext } from './types.js';
 import { logger } from '../../core/logger.js';
 
-const log = logger.module('ContextBuilderRebuild');
+const log = logger.module('ContextHistoryRebuild');
 const REBUILD_RATE_LIMIT_MS = 5 * 60 * 1000;
 const sessionRebuildTimestamps = new Map<string, number>();
 
-interface ContextBuilderRebuildInput {
+interface ContextHistoryRebuildInput {
   session_id?: string;
   agent_id?: string;
   mode?: 'minimal' | 'moderate' | 'aggressive';
@@ -25,7 +25,7 @@ interface ContextBuilderRebuildInput {
   _runtime_context?: Record<string, unknown>;
 }
 
-interface ContextBuilderRebuildOutput {
+interface ContextHistoryRebuildOutput {
   ok: boolean;
   action: 'rebuild' | 'skipped';
   reason?: 'rate_limited' | 'rebuild_already_in_progress' | 'rebuild_failed';
@@ -51,7 +51,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && Array.isArray(value) === false;
 }
 
-function parseInput(rawInput: unknown): ContextBuilderRebuildInput {
+function parseInput(rawInput: unknown): ContextHistoryRebuildInput {
   if (!isRecord(rawInput)) return {};
   return {
     session_id: typeof rawInput.session_id === 'string' ? rawInput.session_id : undefined,
@@ -69,7 +69,7 @@ function parseInput(rawInput: unknown): ContextBuilderRebuildInput {
   };
 }
 
-function resolveRootDir(input: ContextBuilderRebuildInput, agentId: string, context: ToolExecutionContext): string {
+function resolveRootDir(input: ContextHistoryRebuildInput, agentId: string, context: ToolExecutionContext): string {
   const runtimeRoot = input._runtime_context?.root_dir;
   if (typeof runtimeRoot === 'string' && runtimeRoot.trim().length > 0) return runtimeRoot;
   if (agentId === 'finger-system-agent') {
@@ -106,7 +106,7 @@ function parseRuntimeSessionMessages(runtimeContext: Record<string, unknown> | u
     .filter((item) => item.content.trim().length > 0);
 }
 
-function resolvePrompt(input: ContextBuilderRebuildInput, sessionMessages: SessionMessage[]): string {
+function resolvePrompt(input: ContextHistoryRebuildInput, sessionMessages: SessionMessage[]): string {
   if (typeof input.current_prompt === 'string' && input.current_prompt.trim().length > 0) {
     return input.current_prompt.trim();
   }
@@ -114,8 +114,8 @@ function resolvePrompt(input: ContextBuilderRebuildInput, sessionMessages: Sessi
   return latestUser?.content?.trim() ?? '';
 }
 
-export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebuildOutput> = {
-  name: 'context_builder.rebuild',
+export const contextHistoryRebuildTool: InternalTool<unknown, ContextHistoryRebuildOutput> = {
+  name: 'context_history.rebuild',
   executionModel: 'state',
   description: 'Rebuild dynamic history through the single runtime/context-history implementation. Explicit topic rebuild recalls digest history by keyword match and rewrites only P4 dynamic history.',
   inputSchema: {
@@ -134,11 +134,11 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
     },
     additionalProperties: true,
   },
-  execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ContextBuilderRebuildOutput> => {
+  execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ContextHistoryRebuildOutput> => {
     const input = parseInput(rawInput);
     const sessionId = (input.session_id ?? context.sessionId ?? '').trim();
     if (sessionId.length === 0) {
-      throw new Error('context_builder.rebuild requires session_id (or active tool context sessionId)');
+      throw new Error('context_history.rebuild requires session_id (or active tool context sessionId)');
     }
 
     const lastRebuildTime = sessionRebuildTimestamps.get(sessionId) || 0;
@@ -169,7 +169,7 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
     }
 
     const agentId = (input.agent_id ?? context.agentId ?? 'finger-system-agent').trim();
-    const settings = loadContextBuilderSettings();
+    const settings = loadContextHistorySettings();
     const contextWindow = getContextWindow();
     const requestedBudget = [input.rebuild_budget, input.budget_tokens, input.target_budget]
       .find((value) => Number.isFinite(value) && (value as number) > 0);
@@ -217,7 +217,7 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
       .filter((message) => message.metadata?.compactDigest === true)
       .map((message) => message.id);
 
-    log.info('Context builder rebuild completed', {
+    log.info('Context history rebuild completed', {
       sessionId,
       agentId,
       targetBudget,

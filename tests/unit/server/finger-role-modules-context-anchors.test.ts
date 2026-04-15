@@ -38,20 +38,20 @@ describe('finger-role-modules continuity anchors', () => {
         role: 'user' as const,
         content: '任务1：检查邮箱通知',
         timestamp: '2026-03-28T10:00:00.000Z',
-        metadata: { contextBuilderHistorySource: 'context_builder_indexed' },
+        metadata: { contextHistorySource: 'context_history_single_source' },
       },
       {
         id: 'a1',
         role: 'assistant' as const,
         content: '先看邮箱脚本。',
         timestamp: '2026-03-28T10:00:05.000Z',
-        metadata: { contextBuilderHistorySource: 'context_builder_indexed' },
+        metadata: { contextHistorySource: 'context_history_single_source' },
       },
     ];
 
     const augmented = augmentHistoryWithContinuityAnchors(selected, sessionMessages, 10, {
-      contextBuilderHistorySource: 'context_builder_indexed',
-      contextBuilderRebuilt: false,
+      contextHistorySource: 'context_history_single_source',
+      contextHistoryRebuilt: false,
     });
 
     expect(augmented.map((item) => item.id)).toEqual(['u1', 'a1', 'u2', 'u3', 'a3', 's3', 'u4']);

@@ -46,7 +46,7 @@ import {
 } from '../../server/modules/event-forwarding-runtime-events.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { clockTool } from '../../tools/internal/codex-clock-tool.js';
-import { contextBuilderRebuildTool } from '../../tools/internal/context-builder-rebuild-tool.js';
+import { contextHistoryRebuildTool } from '../../tools/internal/context-history-rebuild-tool.js';
 import { TopicShiftWindowGate, type TopicShiftWindowEntry } from '../../blocks/topic-shift-window-gate.js';
 import { topicShiftRecheckTool } from '../../tools/internal/topic-shift-recheck-tool.js';
 import { buildRecheckInputFromWindow } from '../../common/topic-shift-gate.js';
@@ -515,7 +515,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
 
         if (hook === 'hook.context.review') {
           const mode = controlHint === 'aggressive' ? 'aggressive' : 'moderate';
-          const rebuildResult = await contextBuilderRebuildTool.execute(
+          const rebuildResult = await contextHistoryRebuildTool.execute(
             {
               session_id: event.sessionId,
               agent_id: ownerAgentId,
