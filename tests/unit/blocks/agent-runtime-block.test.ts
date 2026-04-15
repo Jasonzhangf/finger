@@ -503,6 +503,7 @@ describe('AgentRuntimeBlock', () => {
       targetAgentId: 'finger-project-agent',
       task: { text: 't1-running' },
       blocking: false,
+      metadata: { workerId: 'finger-project-agent-02' },
     });
 
     const secondDispatch = await custom.block.execute('dispatch', {
@@ -512,6 +513,7 @@ describe('AgentRuntimeBlock', () => {
       blocking: false,
       queueOnBusy: true,
       maxQueueWaitMs: 0,
+      metadata: { workerId: 'finger-project-agent-02' },
     }) as { ok: boolean; status: string; result?: Record<string, unknown> };
 
     expect(secondDispatch.ok).toBe(true);
@@ -519,6 +521,9 @@ describe('AgentRuntimeBlock', () => {
     expect(secondDispatch.result?.status).toBe('queued_mailbox');
     expect(secondDispatch.result?.messageId).toBe('msg-busy-persist-1');
     expect(fallbackToMailbox).toHaveBeenCalledTimes(1);
+    expect(fallbackToMailbox).toHaveBeenCalledWith(expect.objectContaining({
+      targetAgentId: 'finger-project-agent-02',
+    }));
     expect(custom.hubSendToModule).toHaveBeenCalledTimes(1);
 
     const view = await custom.block.execute('runtime_view', {}) as {
@@ -526,7 +531,7 @@ describe('AgentRuntimeBlock', () => {
     };
     expect(view.lanes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        laneKey: 'agent:finger-project-agent',
+        laneKey: 'worker:finger-project-agent:finger-project-agent-02',
         runningCount: 1,
         queuedCount: 0,
       }),

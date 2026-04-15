@@ -25,6 +25,7 @@ import type {
 } from './agent-status-subscriber-types.js';
 import { logger } from '../../core/logger.js';
 import { routeToOutputWithRecovery } from './channel-delivery-recovery.js';
+import { resolveAgentDisplayIdentity } from './agent-name-resolver.js';
 
 const log = logger.module('AgentStatusSubscriber');
 
@@ -63,17 +64,78 @@ function joinUniqueLines(parts: Array<string | undefined>): string {
 /**
  * Build team status summary for display
  */
+function formatTeamAgentLabel(agentId: string): string {
+  const identity = resolveAgentDisplayIdentity(agentId);
+  if (!identity.name || identity.name === identity.id) {
+    return identity.id;
+  }
+  return `${identity.name}(${identity.id})`;
+}
+
+function resolveProjectGroupLabel(agent: TeamAgentStatus): string {
+  const projectId = typeof agent.projectId === 'string' ? agent.projectId.trim() : '';
+  if (projectId && projectId !== 'system') return projectId;
+  const projectPath = typeof agent.projectPath === 'string' ? agent.projectPath.trim() : '';
+  if (!projectPath) return 'default';
+  const normalized = projectPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] || normalized || 'default';
+}
+
+function sortTeamAgents(a: TeamAgentStatus, b: TeamAgentStatus): number {
+  if (a.role !== b.role) return a.role === 'system' ? -1 : 1;
+  const groupA = resolveProjectGroupLabel(a);
+  const groupB = resolveProjectGroupLabel(b);
+  if (groupA !== groupB) return groupA.localeCompare(groupB);
+  return a.agentId.localeCompare(b.agentId);
+}
+
 function buildTeamStatusSummary(teamStatus?: TeamAgentStatus[]): string | undefined {
   if (!teamStatus || teamStatus.length === 0) return undefined;
-  
-  const statusLines: string[] = ['👥 Team Status'];
-  for (const agent of teamStatus) {
-    const statusIcon = agent.runtimeStatus === 'running' ? '🔄' 
-      : agent.runtimeStatus === 'idle' ? '💤' 
-      : '⏸️';
-    statusLines.push(`${statusIcon} ${agent.agentId} ${agent.runtimeStatus}`);
+
+  const deduped = Array.from(
+    teamStatus.reduce((map, item) => {
+      if (!item?.agentId) return map;
+      map.set(item.agentId, item);
+      return map;
+    }, new Map<string, TeamAgentStatus>()).values(),
+  ).sort(sortTeamAgents);
+  if (deduped.length === 0) return undefined;
+
+  const lines: string[] = ['🌐 Global status'];
+  const systemAgents = deduped.filter((agent) => agent.role === 'system');
+  const projectGroups = deduped
+    .filter((agent) => agent.role !== 'system')
+    .reduce((map, agent) => {
+      const key = resolveProjectGroupLabel(agent);
+      const list = map.get(key) ?? [];
+      list.push(agent);
+      map.set(key, list);
+      return map;
+    }, new Map<string, TeamAgentStatus[]>());
+
+  const appendAgents = (title: string, agents: TeamAgentStatus[]): void => {
+    if (agents.length === 0) return;
+    lines.push('');
+    lines.push(title);
+    for (const agent of agents) {
+      const statusIcon = agent.runtimeStatus === 'running'
+        ? '🔄'
+        : agent.runtimeStatus === 'idle'
+          ? '💤'
+          : agent.runtimeStatus === 'queued'
+            ? '⏳'
+            : '⏸️';
+      lines.push(`${statusIcon} ${formatTeamAgentLabel(agent.agentId)} ${agent.runtimeStatus}`);
+    }
+  };
+
+  appendAgents('System Agent', systemAgents);
+  for (const [group, agents] of Array.from(projectGroups.entries()).sort(([a], [b]) => a.localeCompare(b))) {
+    appendAgents(`Project ${group}`, agents.sort(sortTeamAgents));
   }
-  return statusLines.join('\n');
+
+  return lines.join('\n');
 }
 
 function resolveChannelDisplaySettings(

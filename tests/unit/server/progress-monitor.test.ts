@@ -852,6 +852,75 @@ describe('ProgressMonitor incremental updates', () => {
     monitor.stop();
   });
 
+  it('demotes stale running progress with old task text to idle instead of reporting fake stall', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    const sessionId = 'session-stale-running-demote';
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId,
+      agentId: 'finger-project-agent-02',
+      toolId: 'stale-1',
+      toolName: 'exec_command',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'rg stale' },
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId,
+      agentId: 'finger-project-agent-02',
+      toolId: 'stale-1',
+      toolName: 'exec_command',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'rg stale' },
+        output: 'ok',
+      },
+    } as any);
+    await flushEventLoop();
+
+    const progress = monitor.getProgress(sessionId);
+    expect(progress).toBeTruthy();
+    if (progress) {
+      const now = Date.now();
+      progress.status = 'running';
+      progress.hasOpenTurn = false;
+      progress.modelRoundsCount = 3;
+      progress.currentTask = 'exec_command → ✅';
+      progress.latestReasoning = '旧 reasoning 不能无限保持 running';
+      progress.lastUpdateTime = now - 6 * 60_000;
+      progress.lastReportTime = now - 6 * 60_000;
+      progress.lastReportedToolSeq = progress.toolSeqCounter;
+      progress.lastReportKey = 'already-reported';
+    }
+
+    await (monitor as any).generateProgressReport();
+
+    expect(reports).toHaveLength(0);
+    expect(monitor.getProgress(sessionId)?.status).toBe('idle');
+
+    monitor.stop();
+  });
+
   it('includes recent round digest with tool and file evidence', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: string[] = [];
@@ -1138,7 +1207,7 @@ describe('ProgressMonitor incremental updates', () => {
     }
 
     await (monitor as any).generateProgressReport();
-    expect(reports.length).toBeGreaterThanOrEqual(2);
+    expect(reports).toHaveLength(1);
     const latest = monitor.getProgress('session-tool-only-idle');
     expect(latest?.status).toBe('idle');
 

@@ -1729,6 +1729,24 @@ export class AgentRuntimeBlock extends BaseBlock {
     };
   }
 
+  private resolveDispatchWorkerIdentity(input: AgentDispatchRequest): string | undefined {
+    const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+    const taskRecord = isObjectRecord(input.task) ? input.task : {};
+    const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+    const assignment = isObjectRecord(input.assignment) ? input.assignment : {};
+    return firstNonEmptyString(
+      typeof metadata.contextLedgerAgentId === 'string' ? metadata.contextLedgerAgentId : '',
+      typeof metadata.workerId === 'string' ? metadata.workerId : '',
+      typeof metadata.assigneeWorkerId === 'string' ? metadata.assigneeWorkerId : '',
+      typeof assignment.assigneeWorkerId === 'string' ? assignment.assigneeWorkerId : '',
+      typeof assignment.assigneeAgentId === 'string' ? assignment.assigneeAgentId : '',
+      typeof taskRecord.workerId === 'string' ? taskRecord.workerId : '',
+      typeof taskRecord.assigneeWorkerId === 'string' ? taskRecord.assigneeWorkerId : '',
+      typeof taskMetadata.workerId === 'string' ? taskMetadata.workerId : '',
+      typeof taskMetadata.assigneeWorkerId === 'string' ? taskMetadata.assigneeWorkerId : '',
+    )?.trim();
+  }
+
   private toDispatchPayload(input: AgentDispatchRequest, dispatchId: string, traceId?: string): Record<string, unknown> {
     const assignment = this.normalizeAssignment(input);
     const targetRole = this.buildDefinitions().get(input.targetAgentId)?.role ?? normalizeAgentType(input.targetAgentId);
@@ -1736,7 +1754,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     // Check if this is a system role dispatch (should skip dispatch contract)
     const isSystemRole = input.metadata?.role === 'system';
     
-    const metadata = {
+    const metadata: Record<string, unknown> = {
       ...(isObjectRecord(input.metadata) ? input.metadata : {}),
       dispatchId,
       sourceAgentId: input.sourceAgentId,
@@ -1747,6 +1765,20 @@ export class AgentRuntimeBlock extends BaseBlock {
       ...(traceId ? { traceId } : {}),
       orchestration: true,
     };
+    const dispatchWorkerId = this.resolveDispatchWorkerIdentity(input);
+    if (
+      typeof metadata.contextLedgerAgentId !== 'string'
+      && typeof dispatchWorkerId === 'string'
+      && dispatchWorkerId.length > 0
+    ) {
+      metadata.contextLedgerAgentId = dispatchWorkerId;
+    }
+    if (
+      typeof metadata.contextLedgerRole !== 'string'
+      && targetRole === 'project'
+    ) {
+      metadata.contextLedgerRole = 'project';
+    }
 
     // For system role, use the prompt directly without dispatch contract
     const dispatchText = isSystemRole
@@ -2237,10 +2269,11 @@ export class AgentRuntimeBlock extends BaseBlock {
     assignment: AgentAssignmentLifecycle | undefined;
     blocking: boolean;
   }): DispatchResult | null {
+    const mailboxTargetAgentId = this.resolveDispatchWorkerIdentity(params.input) ?? params.targetAgentId;
     const fallback = this.deps.onDispatchQueueTimeout?.({
       dispatchId: params.dispatchId,
       sourceAgentId: params.input.sourceAgentId,
-      targetAgentId: params.targetAgentId,
+      targetAgentId: mailboxTargetAgentId,
       sessionId: params.input.sessionId,
       workflowId: params.input.workflowId,
       assignment: params.assignment,
@@ -2255,7 +2288,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     const fallbackResult: DispatchSummaryResult = {
       success: true,
       status: 'queued_mailbox',
-      summary: fallback.summary ?? `Target agent busy; task moved to mailbox for ${params.targetAgentId}`,
+      summary: fallback.summary ?? `Target agent busy; task moved to mailbox for ${mailboxTargetAgentId}`,
       messageId: fallback.mailboxMessageId,
       delivery: fallback.delivery,
       recoveryAction: 'mailbox',
@@ -2267,7 +2300,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     this.emitDispatchEvent({
       dispatchId: params.dispatchId,
       sourceAgentId: params.input.sourceAgentId,
-      targetAgentId: params.targetAgentId,
+      targetAgentId: mailboxTargetAgentId,
       status: 'queued',
       blocking: params.blocking,
       sessionId: params.input.sessionId,

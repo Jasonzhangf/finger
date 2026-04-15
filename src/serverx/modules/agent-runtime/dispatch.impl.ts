@@ -51,6 +51,7 @@ import {
   extractResultTextForSession,
   kernelMetadataHasCompactedProjection,
 } from '../../../server/modules/message-session.js';
+import { updateTeamAgentStatus } from '../../../common/team-status-state.js';
 
 const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES))
   ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
@@ -105,6 +106,11 @@ function shouldGuaranteeDispatchToTasklist(input: AgentDispatchRequest): boolean
   return source.startsWith('finger-') && target.startsWith('finger-');
 }
 
+function resolveDispatchRuntimeWorkerId(input: AgentDispatchRequest): string | undefined {
+  const workerId = resolveExplicitAssigneeWorkerId(input);
+  return workerId || undefined;
+}
+
 function buildGuaranteedQueuedDispatchResult(params: {
   dispatchId: string;
   reason: string;
@@ -148,7 +154,8 @@ async function buildGuaranteedQueuedDispatchResultWithMailbox(
   status: 'queued';
   result: DispatchSummaryResult;
 }> {
-  const targetAgentId = asTrimmedString(input.targetAgentId);
+  const wakeTargetAgentId = asTrimmedString(input.targetAgentId);
+  const mailboxTargetAgentId = resolveDispatchRuntimeWorkerId(input) ?? wakeTargetAgentId;
   const sourceAgentId = firstNonEmptyString(
     asTrimmedString(input.sourceAgentId),
     asTrimmedString(deps.primaryOrchestratorAgentId),
@@ -156,7 +163,7 @@ async function buildGuaranteedQueuedDispatchResultWithMailbox(
   ) ?? FINGER_SYSTEM_AGENT_ID;
   const sessionId = asTrimmedString(input.sessionId);
   const workflowId = asTrimmedString(input.workflowId);
-  if (!targetAgentId) {
+  if (!wakeTargetAgentId) {
     return buildGuaranteedQueuedDispatchResult(params);
   }
 
@@ -164,7 +171,7 @@ async function buildGuaranteedQueuedDispatchResultWithMailbox(
     const fallback = fallbackDispatchQueueTimeoutToMailbox({
       dispatchId: params.dispatchId,
       sourceAgentId,
-      targetAgentId,
+      targetAgentId: mailboxTargetAgentId,
       sessionId: sessionId || undefined,
       workflowId: workflowId || undefined,
       assignment: isObjectRecord(input.assignment) ? input.assignment as AgentDispatchRequest['assignment'] : undefined,
@@ -192,12 +199,21 @@ async function buildGuaranteedQueuedDispatchResultWithMailbox(
       wakeAttempted = true;
       const wakeResult = await deps.agentRuntimeBlock.execute('dispatch', {
         sourceAgentId,
-        targetAgentId,
+        targetAgentId: wakeTargetAgentId,
         task: wakePrompt,
         queueOnBusy: true,
         maxQueueWaitMs: 0,
         blocking: false,
         metadata: {
+          ...(mailboxTargetAgentId !== wakeTargetAgentId
+            ? {
+                workerId: mailboxTargetAgentId,
+                assigneeWorkerId: mailboxTargetAgentId,
+                contextLedgerAgentId: mailboxTargetAgentId,
+                contextLedgerRole: 'project',
+                mailboxTargetAgentId,
+              }
+            : {}),
           source: 'mailbox-check',
           sourceType: 'mailbox',
           role: 'system',
@@ -217,7 +233,8 @@ async function buildGuaranteedQueuedDispatchResultWithMailbox(
       logger.module('dispatch').warn('High-priority mailbox wake dispatch failed; mailbox task remains persisted', {
         dispatchId: params.dispatchId,
         sourceAgentId,
-        targetAgentId,
+        targetAgentId: wakeTargetAgentId,
+        mailboxTargetAgentId,
         sessionId: sessionId || undefined,
         mailboxMessageId: fallback.mailboxMessageId,
         error: wakeError,
@@ -245,7 +262,8 @@ async function buildGuaranteedQueuedDispatchResultWithMailbox(
     logger.module('dispatch').warn('Guaranteed mailbox queue fallback failed; degrading to queued tasklist summary', {
       dispatchId: params.dispatchId,
       sourceAgentId,
-      targetAgentId,
+      targetAgentId: wakeTargetAgentId,
+      mailboxTargetAgentId,
       sessionId: sessionId || undefined,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -346,6 +364,36 @@ function resolveExplicitAssigneeWorkerId(input: AgentDispatchRequest): string {
     asString(taskMetadata.workerId),
     asString(taskMetadata.worker_id),
   ) ?? '';
+}
+
+function registerDispatchWorkerTeamStatus(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+  workerId: string,
+  preferredSessionId?: string,
+): void {
+  const normalizedWorkerId = workerId.trim();
+  if (!normalizedWorkerId) return;
+  const sessionId = firstNonEmptyString(preferredSessionId, asTrimmedString(input.sessionId)) ?? '';
+  const session = sessionId ? deps.sessionManager.getSession(sessionId) : null;
+  const projectPath = resolveDispatchProjectPathHint(
+    input,
+    typeof session?.projectPath === 'string' ? session.projectPath : '',
+  );
+  if (!projectPath) return;
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const projectId = firstNonEmptyString(
+    asString(metadata.projectId),
+    normalizeProjectPathHint(projectPath),
+  ) ?? normalizeProjectPathHint(projectPath);
+  updateTeamAgentStatus(normalizedWorkerId, {
+    agentId: normalizedWorkerId,
+    projectPath,
+    projectId,
+    workerId: normalizedWorkerId,
+    ...(sessionId ? { sessionId } : {}),
+    role: 'project',
+  });
 }
 
 function addWorkerLoad(
@@ -1898,6 +1946,31 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         assigneeWorkerName,
       },
     };
+  }
+  const runtimeWorkerId = (
+    normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+    && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+  )
+    ? resolveDispatchRuntimeWorkerId(normalizedInput)
+    : undefined;
+  if (runtimeWorkerId) {
+    const nextMetadata = isObjectRecord(normalizedInput.metadata)
+      ? { ...normalizedInput.metadata }
+      : {};
+    nextMetadata.workerId = runtimeWorkerId;
+    nextMetadata.assigneeWorkerId = runtimeWorkerId;
+    nextMetadata.contextLedgerAgentId = runtimeWorkerId;
+    nextMetadata.contextLedgerRole = 'project';
+    normalizedInput = {
+      ...normalizedInput,
+      metadata: nextMetadata,
+    };
+    registerDispatchWorkerTeamStatus(
+      deps,
+      normalizedInput,
+      runtimeWorkerId,
+      bindingGuard.boundSessionId || requestedTaskSessionId || normalizedSessionId,
+    );
   }
   if (projectTaskStateSessionIds.length > 0) {
     const isNewTaskLifecycle = !sourceTaskStateActive || !sameTaskIdentity;

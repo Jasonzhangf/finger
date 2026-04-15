@@ -918,6 +918,7 @@ describe('dispatchTaskToAgent', () => {
       metadata: expect.objectContaining({
         workerId: 'finger-project-agent-02',
         assigneeWorkerId: 'finger-project-agent-02',
+        contextLedgerAgentId: 'finger-project-agent-02',
         workerPoolSelectionReason: 'availability',
       }),
     }));
@@ -1058,6 +1059,72 @@ describe('dispatchTaskToAgent', () => {
     expect(typeof res.result?.messageId).toBe('string');
     expect(String(res.result?.summary || '')).toContain('Dispatch guaranteed via mailbox queue persistence');
     expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
+  });
+
+  it('persists queued mailbox fallback to the selected worker identity', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return {
+          lanes: [
+            {
+              laneKey: 'worker:finger-project-agent:finger-project-agent',
+              agentId: 'finger-project-agent',
+              workerId: 'finger-project-agent',
+              runningCount: 2,
+              queuedCount: 1,
+            },
+            {
+              laneKey: 'worker:finger-project-agent:finger-project-agent-03',
+              agentId: 'finger-project-agent',
+              workerId: 'finger-project-agent-03',
+              runningCount: 1,
+              queuedCount: 0,
+            },
+          ],
+        };
+      }
+      if (command === 'dispatch') {
+        return {
+          ok: false,
+          dispatchId: 'dispatch-mailbox-worker-1',
+          status: 'failed',
+          error: 'target agent busy',
+        };
+      }
+      return { ok: true };
+    });
+    const { deps } = createDeps(execute);
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'selected worker should own mailbox fallback' },
+      assignment: { taskId: 'task-mailbox-worker-1', blocked_by: ['none'] },
+      metadata: { autoRegisterProject: true },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalledWith(expect.objectContaining({
+      targetAgentId: 'finger-project-agent-02',
+    }));
+    const dispatchCalls = execute.mock.calls.filter(([command]) => command === 'dispatch');
+    expect(dispatchCalls[0]?.[1]).toEqual(expect.objectContaining({
+      metadata: expect.objectContaining({
+        workerId: 'finger-project-agent-02',
+        assigneeWorkerId: 'finger-project-agent-02',
+        contextLedgerAgentId: 'finger-project-agent-02',
+      }),
+    }));
+    expect(dispatchCalls[1]?.[1]).toEqual(expect.objectContaining({
+      targetAgentId: 'finger-project-agent',
+      metadata: expect.objectContaining({
+        workerId: 'finger-project-agent-02',
+        assigneeWorkerId: 'finger-project-agent-02',
+        contextLedgerAgentId: 'finger-project-agent-02',
+        mailboxTargetAgentId: 'finger-project-agent-02',
+      }),
+    }));
   });
 
   it('does not retry non-retriable session binding failures and normalizes to queued mailbox', async () => {

@@ -1097,9 +1097,27 @@ export class ProgressMonitor {
 
       // 没有真实信号时，仅在 stall 条件满足时发送心跳（携带内外层等待状态）。
       if (!hasMeaningfulSignal) {
+        // Zombie-running cleanup:
+        // if there is no open turn, no pending tool, and no external wait signal,
+        // old task/reasoning text must not keep the session forever "running".
+        const staleIdleThresholdMs = Math.max(5 * this.config.intervalMs, 5 * 60_000);
+        const inactivityMs = Math.max(0, now - p.lastUpdateTime);
+        const canDemoteToIdle = (
+          inactivityMs >= staleIdleThresholdMs
+          && p.hasOpenTurn !== true
+          && !this.hasPendingToolCalls(p)
+          && !pendingTool
+          && waitLayerInfo.waitLayer !== 'external'
+        );
+        if (canDemoteToIdle) {
+          p.status = 'idle';
+          p.lastUpdateTime = now;
+          continue;
+        }
+
         if (stalled && this.shouldEmitHeartbeat(p, now, heartbeatIntervalMs)) {
           const heartbeatSummary = this.buildHeartbeatSummary(p, now, pendingTool, {
-            suspectedStall: !pendingTool,
+            suspectedStall: !pendingTool && waitLayerInfo.waitLayer !== 'external',
             waitLayer: waitLayerInfo.waitLayer,
             waitKind: waitLayerInfo.waitKind,
             waitDetail: waitLayerInfo.waitDetail,
@@ -1128,24 +1146,6 @@ export class ProgressMonitor {
           p.lastReportedMaxInputTokens = p.maxInputTokens;
           p.lastReportedContextEventAt = p.lastContextEventAt;
           p.lastReportedContextBreakdownKey = contextBreakdownKey;
-        }
-
-        // Avoid stale running records forever, but keep enough window for minute-level heartbeat updates.
-        const staleIdleThresholdMs = Math.max(5 * this.config.intervalMs, 5 * 60_000);
-        const inactivityMs = Math.max(0, now - p.lastUpdateTime);
-        const hasRunningHints = p.hasOpenTurn === true
-          || p.modelRoundsCount > 0
-          || Boolean((p.currentTask ?? '').trim())
-          || Boolean((p.latestReasoning ?? '').trim());
-        if (
-          inactivityMs >= staleIdleThresholdMs
-          && p.hasOpenTurn !== true
-          && !this.hasPendingToolCalls(p)
-          && !pendingTool
-          && !hasRunningHints
-        ) {
-          p.status = 'idle';
-          p.lastUpdateTime = now;
         }
         continue;
       }
