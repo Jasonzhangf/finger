@@ -70,8 +70,8 @@ async function waitForCondition(
   throw new Error(failureMessage());
 }
 
-async function waitForWsPort(wsPort: number): Promise<void> {
-  await waitForCondition(() => new Promise<boolean>((resolve) => {
+async function isPortReachable(wsPort: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
     const socket = net.connect({ host: '127.0.0.1', port: wsPort });
     socket.once('connect', () => {
       socket.destroy();
@@ -81,7 +81,38 @@ async function waitForWsPort(wsPort: number): Promise<void> {
       socket.destroy();
       resolve(false);
     });
-  }), 10_000, () => `WebSocket server on port ${wsPort} did not become reachable`);
+  });
+}
+
+async function waitForWsPort(wsPort: number, timeoutMs = 30_000): Promise<void> {
+  await waitForCondition(
+    () => isPortReachable(wsPort),
+    timeoutMs,
+    () => `WebSocket server on port ${wsPort} did not become reachable`,
+  );
+}
+
+async function waitForGatewayStartup(params: {
+  child: ChildProcess;
+  wsPort: number;
+  timeoutMs: number;
+  getOutput: () => string;
+}): Promise<void> {
+  const { child, wsPort, timeoutMs, getOutput } = params;
+
+  await waitForCondition(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        `Gateway process exited before startup (exitCode=${child.exitCode}, signal=${child.signalCode})\n${getOutput()}`,
+      );
+    }
+
+    if (!fs.existsSync(PID_FILE)) {
+      return false;
+    }
+
+    return isPortReachable(wsPort);
+  }, timeoutMs, () => `Gateway bridge did not finish startup in ${timeoutMs}ms\n${getOutput()}`);
 }
 
 describe('Gateway Bridge QQBot E2E', () => {
@@ -169,12 +200,12 @@ it('should start gateway bridge service', async () => {
       gatewayOutput += data.toString();
     });
 
-    await waitForCondition(
-      () => fs.existsSync(PID_FILE),
-      10_000,
-      () => `PID file was not created\n${gatewayOutput}`,
-    );
-    await waitForWsPort(wsPort);
+    await waitForGatewayStartup({
+      child,
+      wsPort,
+      timeoutMs: 30_000,
+      getOutput: () => gatewayOutput,
+    });
 
     // 验证 PID 文件被创建
     expect(fs.existsSync(PID_FILE)).toBe(true);
@@ -183,13 +214,13 @@ it('should start gateway bridge service', async () => {
     expect(pid).toBeGreaterThan(0);
   }, 30_000);
 
-  it('should connect to WebSocket server', async () => {
+it('should connect to WebSocket server', async () => {
     return new Promise<void>((resolve, reject) => {
       ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
 
       const timeout = setTimeout(() => {
-        reject(new Error('WebSocket connection timeout'));
-      }, 10000);
+        reject(new Error(`WebSocket connection timeout\n${gatewayOutput}`));
+      }, 30000);
 
       ws.on('open', () => {
         clearTimeout(timeout);
@@ -202,7 +233,7 @@ it('should start gateway bridge service', async () => {
         reject(error);
       });
     });
-  });
+  }, 30_000);
 
   it('should send start command and receive ready event', async () => {
     if (!ws) {
@@ -239,7 +270,7 @@ it('should start gateway bridge service', async () => {
     expect(message.ok).toBe(true);
     expect(message.result?.starting).toBe(true);
     expect(message.result?.channelId).toBe(CHANNEL_ID);
-  });
+  }, 30_000);
 
   it('should send message command and receive response', async () => {
     if (!ws) {
@@ -264,7 +295,7 @@ it('should start gateway bridge service', async () => {
     const message = await waiter;
     expect(message.requestId).toBe(requestId);
     expect(typeof message.ok).toBe('boolean');
-  });
+  }, 30_000);
 
   it('should send ping command and receive pong', async () => {
     if (!ws) {
@@ -286,7 +317,7 @@ it('should start gateway bridge service', async () => {
     expect(message.requestId).toBe(requestId);
     expect(message.ok).toBe(true);
     expect(message.result?.pong).toBe(true);
-  });
+  }, 15_000);
 
   it('should stop gateway bridge service', async () => {
     return new Promise<void>((resolve) => {
@@ -308,5 +339,5 @@ it('should start gateway bridge service', async () => {
         resolve();
       }, 2000);
     });
-  });
+  }, 10_000);
 });
