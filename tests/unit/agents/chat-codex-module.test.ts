@@ -11,6 +11,7 @@ import {
   type KernelInputItem,
   isRetryableRunError,
 } from '../../../src/agents/chat-codex/chat-codex-module.js';
+import { progressStore } from '../../../src/server/modules/progress/index.js';
 
 function asRecord(value: unknown): Record<string, unknown> {
   expect(typeof value).toBe('object');
@@ -27,6 +28,8 @@ describe('chat-codex module', () => {
     runner = {
       runTurn: runTurnMock,
     };
+    progressStore.clear('session-explicit-model-round-progress');
+    progressStore.clear('session-stream-round-trace-progress');
   });
 
   it('returns error when input text missing', async () => {
@@ -613,6 +616,172 @@ describe('chat-codex module', () => {
     const turnCompleteIndex = events.findIndex((event) => event.phase === 'turn_complete');
     expect(reasoningIndex).toBeGreaterThanOrEqual(0);
     expect(turnCompleteIndex).toBeGreaterThan(reasoningIndex);
+  });
+
+  it('updates progressStore as soon as explicit model_round arrives', async () => {
+    const sessionId = 'session-explicit-model-round-progress';
+    const streamingRunner: ChatCodexRunner = {
+      runTurn: async (_text, _items, context) => {
+        context?.onKernelEvent?.({
+          id: 'turn-explicit-round',
+          msg: {
+            type: 'model_round',
+            seq: 1,
+            round: 1,
+            history_items_count: 12,
+            input_tokens: 3200,
+            output_tokens: 180,
+            total_tokens: 3380,
+            estimated_tokens_in_context_window: 118000,
+            context_usage_percent: 45,
+            max_input_tokens: 262144,
+          },
+        });
+        const taskCompleteEvent = {
+          id: 'turn-explicit-round',
+          msg: {
+            type: 'task_complete',
+            last_agent_message: 'DONE',
+          },
+        } as const;
+        context?.onKernelEvent?.(taskCompleteEvent);
+        return {
+          reply: 'DONE',
+          events: [taskCompleteEvent],
+          usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+        };
+      },
+    };
+
+    const module = createChatCodexModule({}, streamingRunner);
+    await module.handle({
+      text: 'stream explicit round test',
+      sessionId,
+      roleProfile: 'system',
+      metadata: {
+        stopToolMaxAutoContinueTurns: 0,
+        contextLedgerAgentId: 'finger-system-agent',
+        contextLedgerRole: 'system',
+      },
+    });
+
+    const snapshot = progressStore.get(sessionId, 'finger-system-agent');
+    expect(snapshot?.latestKernelMetadata).toMatchObject({
+      round: 1,
+      seq: 1,
+      history_items_count: 12,
+      input_tokens: 3200,
+      output_tokens: 180,
+      total_tokens: 3380,
+      context_window: 262144,
+      context_usage_percent: 45,
+    });
+  });
+
+  it('emits synthetic model_round from tool_result metadata before turn_complete and updates progressStore', async () => {
+    const sessionId = 'session-stream-round-trace-progress';
+    const onLoopEvent = vi.fn();
+    const metadataJson = JSON.stringify({
+      round_trace: [
+        {
+          seq: 3,
+          round: 1,
+          history_items_count: 9,
+          input_tokens: 2048,
+          output_tokens: 96,
+          total_tokens: 2144,
+          estimated_tokens_in_context_window: 120000,
+          context_usage_percent: 46,
+          max_input_tokens: 262144,
+          response_id: 'resp_round_trace_1',
+        },
+      ],
+    });
+    const streamingRunner: ChatCodexRunner = {
+      runTurn: async (_text, _items, context) => {
+        context?.onKernelEvent?.({
+          id: 'turn-round-trace',
+          msg: {
+            type: 'tool_call',
+            seq: 1,
+            call_id: 'call_rt_ctx',
+            tool_name: 'exec_command',
+            input: { cmd: 'ls' },
+          },
+        });
+        context?.onKernelEvent?.({
+          id: 'turn-round-trace',
+          msg: {
+            type: 'tool_result',
+            seq: 2,
+            call_id: 'call_rt_ctx',
+            tool_name: 'exec_command',
+            output: { ok: true },
+            duration_ms: 8,
+            metadata_json: metadataJson,
+          },
+        });
+        const taskCompleteEvent = {
+          id: 'turn-round-trace',
+          msg: {
+            type: 'task_complete',
+            last_agent_message: 'DONE',
+            metadata_json: metadataJson,
+          },
+        } as const;
+        context?.onKernelEvent?.(taskCompleteEvent);
+        return {
+          reply: 'DONE',
+          events: [taskCompleteEvent],
+          usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+        };
+      },
+    };
+
+    const module = createChatCodexModule({ onLoopEvent }, streamingRunner);
+    await module.handle({
+      text: 'stream round trace test',
+      sessionId,
+      roleProfile: 'system',
+      metadata: {
+        stopToolMaxAutoContinueTurns: 0,
+        contextLedgerAgentId: 'finger-system-agent',
+        contextLedgerRole: 'system',
+      },
+    });
+
+    const events = onLoopEvent.mock.calls.map((call) => call[0] as Record<string, unknown>);
+    const kernelPayloads = events
+      .filter((event) => event.phase === 'kernel_event')
+      .map((event) => asRecord(event.payload));
+    expect(kernelPayloads.filter((payload) => payload.type === 'model_round')).toHaveLength(1);
+
+    const toolResultIndex = events.findIndex((event) => {
+      if (event.phase !== 'kernel_event') return false;
+      const payload = asRecord(event.payload);
+      return payload.type === 'tool_result';
+    });
+    const modelRoundIndex = events.findIndex((event) => {
+      if (event.phase !== 'kernel_event') return false;
+      const payload = asRecord(event.payload);
+      return payload.type === 'model_round';
+    });
+    const turnCompleteIndex = events.findIndex((event) => event.phase === 'turn_complete');
+    expect(toolResultIndex).toBeGreaterThanOrEqual(0);
+    expect(modelRoundIndex).toBeGreaterThan(toolResultIndex);
+    expect(turnCompleteIndex).toBeGreaterThan(modelRoundIndex);
+
+    const snapshot = progressStore.get(sessionId, 'finger-system-agent');
+    expect(snapshot?.latestKernelMetadata).toMatchObject({
+      round: 1,
+      seq: 3,
+      history_items_count: 9,
+      input_tokens: 2048,
+      output_tokens: 96,
+      total_tokens: 2144,
+      context_window: 262144,
+      context_usage_percent: 46,
+    });
   });
 
   it('marks turn_complete as pending-input acknowledgement when active turn already exists', async () => {

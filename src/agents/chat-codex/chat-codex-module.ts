@@ -1061,35 +1061,6 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     } catch (e) {
       chatCodexLog.warn('Failed to update team status to idle', { agentId: resolveAgentId, error: e });
     }
-
-    // 发送 ProgressUpdateEvent 到 ProgressStore（唯一真源）
-    chatCodexLog.info('resolveActiveTurn called', { sessionId: session.sessionId, hasKernelMetadata: !!result.kernelMetadata, input_tokens: result.kernelMetadata?.input_tokens, context_usage_percent: result.kernelMetadata?.context_usage_percent });
-    if (result.kernelMetadata && session.sessionId) {
-      const agentId = typeof result.kernelMetadata.contextLedgerAgentId === 'string'
-        ? result.kernelMetadata.contextLedgerAgentId
-        : 'unknown-agent';
-      const event: ProgressUpdateEvent = {
-        type: 'progress_update',
-        source: 'kernel_response',
-        sessionId: session.sessionId,
-        agentId,
-        timestamp: new Date(),
-        kernelMetadata: {
-          input_tokens: typeof result.kernelMetadata.input_tokens === 'number' ? result.kernelMetadata.input_tokens : 0,
-          output_tokens: typeof result.kernelMetadata.output_tokens === 'number' ? result.kernelMetadata.output_tokens : 0,
-          total_tokens: typeof result.kernelMetadata.total_tokens === 'number' ? result.kernelMetadata.total_tokens : 0,
-          context_window: typeof result.kernelMetadata.context_window === 'number' ? result.kernelMetadata.context_window : 262144,
-          history_items_count: typeof result.kernelMetadata.history_items_count === 'number' ? result.kernelMetadata.history_items_count : 0,
-          round: typeof result.kernelMetadata.round === 'number' ? result.kernelMetadata.round : 0,
-         seq: typeof result.kernelMetadata.seq === 'number' ? result.kernelMetadata.seq : 0,
-         context_usage_percent: activeTurn.contextUsagePercentFromMsg !== undefined
-           ? activeTurn.contextUsagePercentFromMsg
-           : (typeof result.kernelMetadata.context_usage_percent === 'number' ? result.kernelMetadata.context_usage_percent : undefined),
-        },
-        status: 'idle',
-      };
-      progressStore.update(event);
-    }
   }
 
   private rejectActiveTurn(
@@ -1359,6 +1330,7 @@ export function createChatCodexModule(
 
       const emittedReasoningKeys = new Set<string>();
       const emittedReasoningTextKeys = new Set<string>();
+      const emittedModelRoundKeys = new Set<string>();
       const resolveReasoningIdentity = (metadataInput?: Record<string, unknown>): { agentId: string; roleProfile: string } => {
         const agentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
           ?? parseOptionalString(metadataInput?.contextLedgerAgentId)
@@ -1376,6 +1348,133 @@ export function createChatCodexModule(
         if (typeof index === 'number' && Number.isFinite(index)) {
           emittedReasoningKeys.add(`${agentId}|${roleProfile}|${index}|${normalizedText}`);
         }
+      };
+      const resolveModelRoundIdentity = (metadataInput?: Record<string, unknown>): { agentId: string; roleProfile: string } => {
+        const agentId = parseOptionalString(metadataInput?.contextLedgerAgentId)
+          ?? parseOptionalString(context?.metadata?.contextLedgerAgentId)
+          ?? parseOptionalString(context?.metadata?.agentId)
+          ?? contextLedgerAgentId;
+        const roleProfile = parseOptionalString(metadataInput?.contextLedgerRole)
+          ?? parseOptionalString(metadataInput?.roleProfile)
+          ?? parseOptionalString(context?.metadata?.contextLedgerRole)
+          ?? parseOptionalString(context?.metadata?.roleProfile)
+          ?? contextLedgerRole;
+        return { agentId, roleProfile };
+      };
+      const resolveModelRoundDedupKey = (payload: Record<string, unknown>): string | undefined => {
+        const responseId = parseOptionalString(payload.responseId);
+        if (responseId) return `response:${responseId}`;
+        const seq = typeof payload.seq === 'number' && Number.isFinite(payload.seq)
+          ? Math.floor(payload.seq)
+          : undefined;
+        const round = typeof payload.round === 'number' && Number.isFinite(payload.round)
+          ? Math.floor(payload.round)
+          : undefined;
+        if (seq !== undefined && round !== undefined) return `seq:${seq}|round:${round}`;
+        if (seq !== undefined) return `seq:${seq}`;
+        if (round !== undefined) return `round:${round}`;
+        return undefined;
+      };
+      const toNonNegativeInt = (value: unknown): number | undefined => (
+        typeof value === 'number' && Number.isFinite(value) && value >= 0
+          ? Math.floor(value)
+          : undefined
+      );
+      const resolveContextUsagePercent = (payload: Record<string, unknown>): number | undefined => {
+        const explicit = toNonNegativeInt(payload.contextUsagePercent);
+        if (explicit !== undefined) return explicit;
+        const estimated = toNonNegativeInt(payload.estimatedTokensInContextWindow);
+        const maxInput = toNonNegativeInt(payload.maxInputTokens);
+        if (estimated !== undefined && maxInput !== undefined && maxInput > 0) {
+          return Math.max(0, Math.floor((estimated / maxInput) * 100));
+        }
+        return undefined;
+      };
+      const publishProgressStoreFromModelRound = (payload: Record<string, unknown>): void => {
+        const agentId = parseOptionalString(payload.agentId) ?? contextLedgerAgentId;
+        const round = toNonNegativeInt(payload.round);
+        if (round === undefined || round <= 0) return;
+        const kernelMetadata: ProgressUpdateEvent['kernelMetadata'] = {
+          input_tokens: toNonNegativeInt(payload.inputTokens) ?? 0,
+          output_tokens: toNonNegativeInt(payload.outputTokens) ?? 0,
+          total_tokens: toNonNegativeInt(payload.totalTokens) ?? 0,
+          context_window: Math.max(1, toNonNegativeInt(payload.maxInputTokens) ?? DEFAULT_CONTEXT_WINDOW_TOKENS),
+          history_items_count: toNonNegativeInt(payload.historyItemsCount) ?? 0,
+          round,
+          seq: toNonNegativeInt(payload.seq) ?? 0,
+          ...(resolveContextUsagePercent(payload) !== undefined
+            ? { context_usage_percent: resolveContextUsagePercent(payload) }
+            : {}),
+        };
+        progressStore.update({
+          type: 'progress_update',
+          source: 'kernel_response',
+          sessionId,
+          agentId,
+          timestamp: new Date(),
+          kernelMetadata,
+        });
+      };
+      const emitModelRoundPayload = (payload: Record<string, unknown>): boolean => {
+        const dedupKey = resolveModelRoundDedupKey(payload);
+        if (dedupKey && emittedModelRoundKeys.has(dedupKey)) return false;
+        if (dedupKey) emittedModelRoundKeys.add(dedupKey);
+        safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
+          sessionId,
+          phase: 'kernel_event',
+          timestamp: new Date().toISOString(),
+          payload,
+        });
+        publishProgressStoreFromModelRound(payload);
+        return true;
+      };
+      const emitSyntheticModelRoundsFromMetadata = (
+        event: ChatCodexKernelEvent,
+        metadataInput?: Record<string, unknown>,
+      ): boolean => {
+        const metadata = metadataInput
+          ?? (
+            event.msg.metadata_json && event.msg.metadata_json.trim().length > 0
+              ? parseKernelMetadata(event.msg.metadata_json)
+              : undefined
+          );
+        if (!metadata) return false;
+        const rounds = extractKernelRoundTrace(metadata);
+        if (rounds.length === 0) return false;
+        const identity = resolveModelRoundIdentity(metadata);
+        let emitted = false;
+        for (const round of rounds) {
+          emitted = emitModelRoundPayload({
+            id: event.id,
+            type: 'model_round',
+            ...(typeof round.seq === 'number' ? { seq: round.seq } : {}),
+            round: round.round,
+            ...(round.functionCallsCount !== undefined ? { functionCallsCount: round.functionCallsCount } : {}),
+            ...(round.reasoningCount !== undefined ? { reasoningCount: round.reasoningCount } : {}),
+            ...(round.historyItemsCount !== undefined ? { historyItemsCount: round.historyItemsCount } : {}),
+            ...(round.hasOutputText !== undefined ? { hasOutputText: round.hasOutputText } : {}),
+            ...(round.finishReason ? { finishReason: round.finishReason } : {}),
+            ...(round.responseStatus ? { responseStatus: round.responseStatus } : {}),
+            ...(round.responseIncompleteReason ? { responseIncompleteReason: round.responseIncompleteReason } : {}),
+            ...(round.responseId ? { responseId: round.responseId } : {}),
+            ...(round.inputTokens !== undefined ? { inputTokens: round.inputTokens } : {}),
+            ...(round.outputTokens !== undefined ? { outputTokens: round.outputTokens } : {}),
+            ...(round.totalTokens !== undefined ? { totalTokens: round.totalTokens } : {}),
+            ...(round.estimatedTokensInContextWindow !== undefined
+              ? { estimatedTokensInContextWindow: round.estimatedTokensInContextWindow }
+              : {}),
+            ...(round.estimatedTokensCompactable !== undefined
+              ? { estimatedTokensCompactable: round.estimatedTokensCompactable }
+              : {}),
+            ...(round.contextUsagePercent !== undefined ? { contextUsagePercent: round.contextUsagePercent } : {}),
+            ...(round.maxInputTokens !== undefined ? { maxInputTokens: round.maxInputTokens } : {}),
+            ...(round.thresholdPercent !== undefined ? { thresholdPercent: round.thresholdPercent } : {}),
+            agentId: identity.agentId,
+            roleProfile: identity.roleProfile,
+            ...(contextBreakdownSnapshot ? { contextBreakdown: contextBreakdownSnapshot } : {}),
+          }) || emitted;
+        }
+        return emitted;
       };
 
       const emitReasoningTraceFromMetadata = (
@@ -1455,44 +1554,7 @@ export function createChatCodexModule(
 
         let emitted = false;
         if (emitModelRound) {
-          const roundTrace = extractKernelRoundTrace(metadata);
-          for (const round of roundTrace) {
-            emitted = true;
-            safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
-              sessionId,
-              phase: 'kernel_event',
-              timestamp: new Date().toISOString(),
-              payload: {
-                id: event.id,
-                type: 'model_round',
-                ...(typeof round.seq === 'number' ? { seq: round.seq } : {}),
-                round: round.round,
-                ...(round.functionCallsCount !== undefined ? { functionCallsCount: round.functionCallsCount } : {}),
-                ...(round.reasoningCount !== undefined ? { reasoningCount: round.reasoningCount } : {}),
-                ...(round.historyItemsCount !== undefined ? { historyItemsCount: round.historyItemsCount } : {}),
-                ...(round.hasOutputText !== undefined ? { hasOutputText: round.hasOutputText } : {}),
-                ...(round.finishReason ? { finishReason: round.finishReason } : {}),
-                ...(round.responseStatus ? { responseStatus: round.responseStatus } : {}),
-                ...(round.responseIncompleteReason ? { responseIncompleteReason: round.responseIncompleteReason } : {}),
-                ...(round.responseId ? { responseId: round.responseId } : {}),
-                ...(round.inputTokens !== undefined ? { inputTokens: round.inputTokens } : {}),
-                ...(round.outputTokens !== undefined ? { outputTokens: round.outputTokens } : {}),
-                ...(round.totalTokens !== undefined ? { totalTokens: round.totalTokens } : {}),
-                ...(round.estimatedTokensInContextWindow !== undefined
-                  ? { estimatedTokensInContextWindow: round.estimatedTokensInContextWindow }
-                  : {}),
-                ...(round.estimatedTokensCompactable !== undefined
-                  ? { estimatedTokensCompactable: round.estimatedTokensCompactable }
-                  : {}),
-                ...(round.contextUsagePercent !== undefined ? { contextUsagePercent: round.contextUsagePercent } : {}),
-                ...(round.maxInputTokens !== undefined ? { maxInputTokens: round.maxInputTokens } : {}),
-                ...(round.thresholdPercent !== undefined ? { thresholdPercent: round.thresholdPercent } : {}),
-                agentId: contextLedgerAgentId,
-                roleProfile: contextLedgerRole,
-                ...(contextBreakdownSnapshot ? { contextBreakdown: contextBreakdownSnapshot } : {}),
-              },
-            });
-          }
+          emitted = emitSyntheticModelRoundsFromMetadata(event, metadata) || emitted;
         }
 
         if (emitToolTrace) {
@@ -1543,6 +1605,9 @@ export function createChatCodexModule(
         event: ChatCodexKernelEvent,
         options: { markSyntheticToolEvents?: boolean; markRealtimeToolEvents?: boolean } = {},
       ): void => {
+        const metadata = event.msg.metadata_json && event.msg.metadata_json.trim().length > 0
+          ? parseKernelMetadata(event.msg.metadata_json)
+          : undefined;
         const payload: Record<string, unknown> = {
           id: event.id,
           type: event.msg.type,
@@ -1554,9 +1619,6 @@ export function createChatCodexModule(
           const reasoningText = parseOptionalString(event.msg.message)
             ?? parseOptionalString(event.msg.last_agent_message);
           if (reasoningText) {
-            const metadata = event.msg.metadata_json && event.msg.metadata_json.trim().length > 0
-              ? parseKernelMetadata(event.msg.metadata_json)
-              : undefined;
             const identity = resolveReasoningIdentity(metadata);
             payload.text = reasoningText;
             payload.agentId = identity.agentId;
@@ -1594,8 +1656,9 @@ export function createChatCodexModule(
           }
           if (typeof event.msg.duration_ms === 'number') payload.duration = event.msg.duration_ms;
         } else if (event.msg.type === 'model_round') {
-          payload.agentId = contextLedgerAgentId;
-          payload.roleProfile = contextLedgerRole;
+          const identity = resolveModelRoundIdentity(metadata);
+          payload.agentId = identity.agentId;
+          payload.roleProfile = identity.roleProfile;
           if (typeof event.msg.round === 'number') payload.round = event.msg.round;
           if (typeof event.msg.function_calls_count === 'number') payload.functionCallsCount = event.msg.function_calls_count;
           if (typeof event.msg.reasoning_count === 'number') payload.reasoningCount = event.msg.reasoning_count;
@@ -1635,22 +1698,24 @@ export function createChatCodexModule(
           }
         }
 
-        if (event.msg.metadata_json && event.msg.metadata_json.trim().length > 0) {
-          const metadata = parseKernelMetadata(event.msg.metadata_json);
-          if (metadata) {
-            const toolTrace = extractKernelToolTrace(metadata);
-            if (toolTrace.length > 0) {
-              payload.toolTrace = toolTrace;
-              payload.toolTraceCount = toolTrace.length;
-              if (options.markSyntheticToolEvents) {
-                payload.syntheticToolEvents = true;
-              }
-              if (options.markRealtimeToolEvents) {
-                payload.realtimeToolEvents = true;
-              }
+        if (metadata) {
+          const toolTrace = extractKernelToolTrace(metadata);
+          if (toolTrace.length > 0) {
+            payload.toolTrace = toolTrace;
+            payload.toolTraceCount = toolTrace.length;
+            if (options.markSyntheticToolEvents) {
+              payload.syntheticToolEvents = true;
             }
-            emitReasoningTraceFromMetadata(event, metadata);
+            if (options.markRealtimeToolEvents) {
+              payload.realtimeToolEvents = true;
+            }
           }
+          emitReasoningTraceFromMetadata(event, metadata);
+        }
+
+        if (event.msg.type === 'model_round') {
+          emitModelRoundPayload(payload);
+          return;
         }
 
         safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
@@ -1659,6 +1724,10 @@ export function createChatCodexModule(
           timestamp: new Date().toISOString(),
           payload,
         });
+
+        if (metadata) {
+          emitSyntheticModelRoundsFromMetadata(event, metadata);
+        }
       };
 
       let streamedKernelEventCount = 0;
