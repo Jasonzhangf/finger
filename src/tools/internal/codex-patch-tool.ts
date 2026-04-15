@@ -1,8 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import { InternalTool, ToolExecutionContext } from './types.js';
-
-const DEFAULT_TIMEOUT_MS = 30_000;
 
 interface PatchInput {
   patch: string;
@@ -43,6 +41,19 @@ interface PatchOpUpdate {
 
 type PatchOp = PatchOpAdd | PatchOpDelete | PatchOpUpdate;
 
+interface VirtualFileState {
+  path: string;
+  originalExists: boolean;
+  originalContent: string;
+  exists: boolean;
+  content: string;
+  touched: boolean;
+}
+
+type PatchMutation =
+  | { kind: 'write'; targetPath: string; content: string }
+  | { kind: 'delete'; targetPath: string };
+
 export const patchTool: InternalTool<unknown, PatchOutput> = {
   name: 'patch',
   executionModel: 'execution',
@@ -59,18 +70,15 @@ export const patchTool: InternalTool<unknown, PatchOutput> = {
   },
   execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<PatchOutput> => {
     const input = parsePatchInput(rawInput);
-    const timeoutMs = typeof input.timeout_ms === 'number' && input.timeout_ms > 0
-      ? Math.floor(input.timeout_ms)
-      : DEFAULT_TIMEOUT_MS;
     const startedAt = Date.now();
-    const timedOut = false;
     const ops = parsePatchOps(input.patch);
-    applyPatchOps(ops, context.cwd);
+    const mutations = planPatchMutations(ops, context.cwd);
+    commitPatchMutations(mutations);
     const durationMs = Date.now() - startedAt;
     const summary = formatPatchSummary(ops);
 
     return {
-      ok: !timedOut && durationMs <= timeoutMs,
+      ok: true,
       exitCode: 0,
       signal: null,
       stdout: summary,
@@ -78,7 +86,7 @@ export const patchTool: InternalTool<unknown, PatchOutput> = {
       command: 'internal_patch',
       commandArray: ['internal_patch'],
       cwd: context.cwd,
-      timedOut,
+      timedOut: false,
       durationMs,
     };
   },
@@ -129,7 +137,7 @@ function parsePatchOps(input: string): PatchOp[] {
       const content: string[] = [];
       while (i < endIndex && !isPatchHeader(lines[i])) {
         const body = lines[i];
-        if (body === '*** End of File') {
+        if (body === '*** End of File' || body === '\\ No newline at end of file') {
           i += 1;
           continue;
         }
@@ -165,7 +173,7 @@ function parsePatchOps(input: string): PatchOp[] {
       let repairedLooseContent = false;
       while (i < endIndex && !isPatchHeader(lines[i])) {
         const body = lines[i];
-        if (body === '*** End of File') {
+        if (body === '*** End of File' || body === '\\ No newline at end of file') {
           i += 1;
           continue;
         }
@@ -212,76 +220,155 @@ function isPatchHeader(line: string): boolean {
     || line.trim() === '*** End Patch';
 }
 
-function applyPatchOps(ops: PatchOp[], cwd: string): void {
+function planPatchMutations(ops: PatchOp[], cwd: string): PatchMutation[] {
+  const stateMap = new Map<string, VirtualFileState>();
   for (const op of ops) {
     if (op.kind === 'add') {
-      const target = resolvePatchPath(cwd, op.filePath);
-      if (existsSync(target)) {
+      const targetPath = resolvePatchPath(cwd, op.filePath);
+      const state = loadVirtualFileState(targetPath, stateMap);
+      if (state.exists) {
         throw new Error(`patch add failed: file already exists: ${op.filePath}`);
       }
-      ensureParentDir(target);
-      const next = op.lines.length > 0 ? `${op.lines.join('\n')}\n` : '';
-      writeFileSync(target, next, 'utf-8');
+      state.exists = true;
+      state.content = op.lines.length > 0 ? `${op.lines.join('\n')}\n` : '';
+      state.touched = true;
       continue;
     }
+
     if (op.kind === 'delete') {
-      const target = resolvePatchPath(cwd, op.filePath);
-      if (!existsSync(target)) {
+      const targetPath = resolvePatchPath(cwd, op.filePath);
+      const state = loadVirtualFileState(targetPath, stateMap);
+      if (!state.exists) {
         throw new Error(`patch delete failed: file not found: ${op.filePath}`);
       }
-      rmSync(target);
+      state.exists = false;
+      state.content = '';
+      state.touched = true;
       continue;
     }
 
     const sourcePath = resolvePatchPath(cwd, op.filePath);
-    if (!existsSync(sourcePath)) {
+    const sourceState = loadVirtualFileState(sourcePath, stateMap);
+    if (!sourceState.exists) {
       throw new Error(`patch update failed: file not found: ${op.filePath}`);
     }
-    const original = readFileSync(sourcePath, 'utf-8');
-    const hadTrailingNewline = original.endsWith('\n');
-    let lines = splitFileLines(original);
-    const blocks = parseUpdateBlocks(op.bodyLines);
-    let searchStart = 0;
-    const shouldReplaceWholeFile =
-      op.repairedLooseContent === true
-      && blocks.length > 0
-      && blocks.every((block) => block.every((entry) => entry.kind !== '-'))
-      && blocks.every((block) => block.filter((entry) => entry.kind !== '+').length === 0);
-    if (shouldReplaceWholeFile) {
-      lines = blocks.flatMap((block) => block.filter((entry) => entry.kind === '+').map((entry) => entry.text));
-    }
-    for (const block of blocks) {
-      if (shouldReplaceWholeFile) break;
-      const oldSeq = block.filter((entry) => entry.kind !== '+').map((entry) => entry.text);
-      const newSeq = block.filter((entry) => entry.kind !== '-').map((entry) => entry.text);
-      let idx = findSubsequence(lines, oldSeq, searchStart);
-      if (idx < 0 && searchStart > 0) {
-        idx = findSubsequence(lines, oldSeq, 0);
-      }
-      if (idx < 0) {
-        throw new Error(`patch update failed: hunk context not found in ${op.filePath}`);
-      }
-      lines.splice(idx, oldSeq.length, ...newSeq);
-      searchStart = idx + newSeq.length;
-    }
-    let nextContent = lines.join('\n');
-    if (lines.length > 0 && hadTrailingNewline) {
-      nextContent += '\n';
-    }
-    writeFileSync(sourcePath, nextContent, 'utf-8');
+    const nextContent = applyUpdateToContent(sourceState.content, op);
     if (op.moveTo && op.moveTo.trim().length > 0) {
-      const movedTo = resolvePatchPath(cwd, op.moveTo);
-      ensureParentDir(movedTo);
-      if (existsSync(movedTo)) {
-        throw new Error(`patch move failed: target exists: ${op.moveTo}`);
+      const targetPath = resolvePatchPath(cwd, op.moveTo);
+      if (targetPath !== sourcePath) {
+        const targetState = loadVirtualFileState(targetPath, stateMap);
+        if (targetState.exists) {
+          throw new Error(`patch move failed: target exists: ${op.moveTo}`);
+        }
+        targetState.exists = true;
+        targetState.content = nextContent;
+        targetState.touched = true;
+        sourceState.exists = false;
+        sourceState.content = '';
+        sourceState.touched = true;
+        continue;
       }
-      renameSync(sourcePath, movedTo);
+    }
+    sourceState.content = nextContent;
+    sourceState.touched = true;
+  }
+
+  const mutations: PatchMutation[] = [];
+  for (const state of stateMap.values()) {
+    if (!state.touched) continue;
+    if (!state.exists) {
+      if (state.originalExists) {
+        mutations.push({ kind: 'delete', targetPath: state.path });
+      }
+      continue;
+    }
+    if (!state.originalExists || state.content !== state.originalContent) {
+      mutations.push({ kind: 'write', targetPath: state.path, content: state.content });
+    }
+  }
+
+  return mutations.sort(comparePatchMutations);
+}
+
+function loadVirtualFileState(filePath: string, stateMap: Map<string, VirtualFileState>): VirtualFileState {
+  const existing = stateMap.get(filePath);
+  if (existing) return existing;
+  const originalExists = existsSync(filePath);
+  const originalContent = originalExists ? readFileSync(filePath, 'utf-8') : '';
+  const state: VirtualFileState = {
+    path: filePath,
+    originalExists,
+    originalContent,
+    exists: originalExists,
+    content: originalContent,
+    touched: false,
+  };
+  stateMap.set(filePath, state);
+  return state;
+}
+
+function applyUpdateToContent(content: string, op: PatchOpUpdate): string {
+  const hadTrailingNewline = content.endsWith('\n');
+  let lines = splitFileLines(content);
+  const blocks = parseUpdateBlocks(op.bodyLines);
+  let searchStart = 0;
+  const shouldReplaceWholeFile =
+    op.repairedLooseContent === true
+    && blocks.length > 0
+    && blocks.every((block) => block.every((entry) => entry.kind !== '-'))
+    && blocks.every((block) => block.filter((entry) => entry.kind !== '+').length === 0);
+  if (shouldReplaceWholeFile) {
+    lines = blocks.flatMap((block) => block.filter((entry) => entry.kind === '+').map((entry) => entry.text));
+  }
+  for (const block of blocks) {
+    if (shouldReplaceWholeFile) break;
+    const oldSeq = block.filter((entry) => entry.kind !== '+').map((entry) => entry.text);
+    const newSeq = block.filter((entry) => entry.kind !== '-').map((entry) => entry.text);
+    let idx = findSubsequence(lines, oldSeq, searchStart);
+    if (idx < 0 && searchStart > 0) {
+      idx = findSubsequence(lines, oldSeq, 0);
+    }
+    if (idx < 0) {
+      throw new Error(`patch update failed: hunk context not found in ${op.filePath}`);
+    }
+    lines.splice(idx, oldSeq.length, ...newSeq);
+    searchStart = idx + newSeq.length;
+  }
+  let nextContent = lines.join('\n');
+  if (lines.length > 0 && hadTrailingNewline) {
+    nextContent += '\n';
+  }
+  return nextContent;
+}
+
+function commitPatchMutations(mutations: PatchMutation[]): void {
+  for (const mutation of mutations) {
+    if (mutation.kind === 'write') {
+      ensureParentDir(mutation.targetPath);
+      writeFileSync(mutation.targetPath, mutation.content, 'utf-8');
+      continue;
+    }
+    if (existsSync(mutation.targetPath)) {
+      rmSync(mutation.targetPath);
     }
   }
 }
 
+function comparePatchMutations(left: PatchMutation, right: PatchMutation): number {
+  if (left.kind !== right.kind) {
+    return left.kind === 'write' ? -1 : 1;
+  }
+  return left.targetPath.localeCompare(right.targetPath);
+}
+
 function resolvePatchPath(cwd: string, filePath: string): string {
-  return path.resolve(cwd, filePath);
+  const root = path.resolve(cwd);
+  const resolved = path.resolve(root, filePath);
+  const relative = path.relative(root, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`patch path escapes cwd: ${filePath}`);
+  }
+  return resolved;
 }
 
 function ensureParentDir(filePath: string): void {
@@ -301,6 +388,9 @@ function parseUpdateBlocks(
   const blocks: Array<Array<{ kind: ' ' | '+' | '-'; text: string }>> = [];
   let current: Array<{ kind: ' ' | '+' | '-'; text: string }> | null = null;
   for (const line of bodyLines) {
+    if (line === '\\ No newline at end of file') {
+      continue;
+    }
     if (line.startsWith('@@')) {
       if (current && current.length > 0) blocks.push(current);
       current = [];
