@@ -801,18 +801,19 @@ export class ProgressMonitor {
     this._stopCleanup = unsubscribe;
   }
 
-  private subscribeToReasoningEvents(): void {
-    const unsubscribe = this.eventBus.subscribe('kernel_reasoning', (event: any) => {
-      const sessionId = event?.sessionId;
-      if (!sessionId) return;
+ private subscribeToReasoningEvents(): void {
+   const unsubscribe = this.eventBus.subscribe('kernel_reasoning', (event: any) => {
+     const sessionId = event?.sessionId;
+     if (!sessionId) return;
 
-      const text = typeof event?.payload?.text === 'string' ? event.payload.text : '';
-      if (text.length > 0) {
-        for (const [, progress] of this.getProgressEntriesBySession(sessionId)) {
-          progress.latestReasoning = text.slice(0, 120);
-        }
-      }
-    });
+     const text = typeof event?.payload?.text === 'string' ? event.payload.text : '';
+     if (text.length > 0) {
+       for (const [, progress] of this.getProgressEntriesBySession(sessionId)) {
+         progress.latestReasoning = text.slice(0, 120);
+          progress.lastUpdateTime = Date.now();
+       }
+     }
+   });
 
     const prev = this._stopCleanup;
     this._stopCleanup = () => {
