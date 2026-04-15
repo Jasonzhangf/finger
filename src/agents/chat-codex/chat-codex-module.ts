@@ -1018,6 +1018,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
           history_items_count: typeof result.kernelMetadata.history_items_count === 'number' ? result.kernelMetadata.history_items_count : 0,
           round: typeof result.kernelMetadata.round === 'number' ? result.kernelMetadata.round : 0,
           seq: typeof result.kernelMetadata.seq === 'number' ? result.kernelMetadata.seq : 0,
+          context_usage_percent: typeof result.kernelMetadata.context_usage_percent === 'number' ? result.kernelMetadata.context_usage_percent : undefined,
         },
         status: 'idle',
       };

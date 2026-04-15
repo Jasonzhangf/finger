@@ -1193,7 +1193,8 @@ export class ProgressMonitor {
         success: t.success,
       })),
       latestReasoning: p.latestReasoning,
-      contextUsagePercent: p.contextUsagePercent,
+      // 从 progressStore 提取最新的 context_usage_percent（唯一真源）
+      contextUsagePercent: progressStore.get(p.sessionId, p.agentId)?.latestKernelMetadata?.context_usage_percent ?? p.contextUsagePercent,
       estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
       maxInputTokens: p.maxInputTokens,
       lastContextEvent: includeContextEvent ? p.lastContextEvent : undefined,

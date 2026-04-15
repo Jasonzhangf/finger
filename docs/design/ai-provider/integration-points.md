@@ -43,9 +43,9 @@ const response = await provider.chat({
 
 ### 2. ContextBuilder.ranking provider
 
-**当前**：
+**旧实现（已删除）**：
 ```typescript
-// src/runtime/context-builder.ts
+// historical: src/runtime/context-builder.ts
 const providerResolved = resolveKernelProvider(providerId);
 const endpoints = buildResponsesEndpoints(provider.base_url);
 const headers = buildProviderHeaders(provider);
@@ -69,7 +69,7 @@ const provider = registry.get(providerId);
 | 步骤 | 文件 | 改动 |
 |------|------|------|
 | Step 1 | `runtime-facade.ts` | `summarizeCompactionWithProvider` 用 ProviderRegistry |
-| Step 2 | `context-builder.ts` | ranking provider 用 ProviderRegistry |
+| Step 2 | `context-history/*` / `context-ledger-memory.ts` | 如仍保留 ranking/recall 能力，统一迁移到现存唯一实现链 |
 | Step 3 | `kernel-provider-client.ts` | 标记为 deprecated（保留向后兼容） |
 | Step 4 | E2E test | compaction + ranking 测试 |
 

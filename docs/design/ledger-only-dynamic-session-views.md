@@ -226,9 +226,9 @@ Context Builder 从“history 重排器”升级为：
 
 ### 6.6 已完成的第三步实现（finger-262.4）
 - **Session 文件去真源化**（`src/orchestration/session-manager.ts`）：
-  - 加载 session 文件时强制 `messages=[]`，不再信任文件内历史消息；
-  - 持久化 session 文件时也固定写 `messages=[]`，只保留元数据；
-  - `getMessages/getFullContext/getLedgerView` 全部改为 ledger 读取路径；
+  - 旧的“额外动态视图 / getLedgerView”路径已删除；
+  - 运行时唯一历史快照改为 `Session.messages`；
+  - `getMessages/getFullContext` 统一读取当前 session snapshot，不再额外拼一份 builder 视图；
   - `latestUserPrompt` 改为从 ledger 反查，不再读 `session.messages`；
   - `updateMessage/deleteMessage` 在 ledger-only 模式下禁用（append-only 原则）。
 - **Server 路由与命令处理去 `session.messages` 依赖**：

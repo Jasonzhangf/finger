@@ -4,17 +4,15 @@
  */
 
 import type { Express } from 'express';
-import { dirname } from 'path';
 import type { SessionManager } from '../../orchestration/session-manager.js';
-import { buildContext } from '../../runtime/context-builder.js';
 import { getContextWindow, loadContextBuilderSettings } from '../../core/user-settings.js';
 import { listLedgerSessionsSnapshot, resolveLedgerSource } from './ledger-routes-storage.js';
 import {
   buildContextMonitorRounds,
   toMonitorEntry,
   type ContextMonitorRound,
-  type ContextMonitorSlotEntry,
 } from './ledger-routes-context-monitor.js';
+import { buildSnapshotContextBuild } from './ledger-routes-context-build.js';
 
 interface LedgerRouteDeps {
   sessionManager: SessionManager;
@@ -89,7 +87,6 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
       const {
         sessionId,
         session,
-        resolvedStorageDir,
         resolvedAgentId,
         ledgerEntries,
       } = resolved;
@@ -110,101 +107,8 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
         ? Math.floor(contextBuilderSettings.historyBudgetTokens)
         : Math.floor(contextWindow * contextBuilderSettings.budgetRatio);
       const targetBudget = Math.max(1, Math.min(contextWindow, configuredBudget));
-      const nowMs = Date.now();
 
-      let contextBuild:
-        | {
-          ok: true;
-          totalTokens: number;
-          memoryMdIncluded: boolean;
-          taskBlockCount: number;
-          filteredTaskBlockCount: number;
-          buildTimestamp: string;
-          metadata: {
-            rawTaskBlockCount: number;
-            timeWindowFilteredCount: number;
-            budgetTruncatedCount: number;
-            budgetTruncatedTasks?: Array<{
-              id: string;
-              tokenCount: number;
-              startTimeIso: string;
-              topic?: string;
-              tags?: string[];
-              summary?: string;
-            }>;
-            targetBudget: number;
-            actualTokens: number;
-            workingSetTaskBlockCount?: number;
-            historicalTaskBlockCount?: number;
-            workingSetMessageCount?: number;
-            historicalMessageCount?: number;
-            workingSetTokens?: number;
-            historicalTokens?: number;
-            workingSetBlockIds?: string[];
-            historicalBlockIds?: string[];
-          };
-          messages: Array<{
-            id: string;
-            role: string;
-            content: string;
-            timestampIso: string;
-            tokenCount: number;
-            contextZone?: 'working_set' | 'historical_memory';
-          }>;
-        }
-        | {
-          ok: false;
-          error: string;
-          messages: [];
-        };
-
-      try {
-        // buildContext expects `rootDir` to be the sessions root directory,
-        // and will append `<sessionId>/<agentId>/<mode>/context-ledger.jsonl`.
-        // `resolvedStorageDir` here is already the concrete session directory,
-        // so we must pass its parent to avoid duplicated session path segments.
-        const contextRootDir = dirname(resolvedStorageDir);
-        const built = await buildContext(
-          {
-            rootDir: contextRootDir,
-            sessionId,
-            agentId: resolvedAgentId,
-            mode: 'main',
-          },
-          {
-            targetBudget,
-            buildMode: contextBuilderSettings.mode,
-            includeMemoryMd: false,
-            enableTaskGrouping: true,
-            enableModelRanking: contextBuilderSettings.enableModelRanking,
-            rankingProviderId: contextBuilderSettings.rankingProviderId,
-          },
-        );
-
-        contextBuild = {
-          ok: true,
-          totalTokens: built.totalTokens,
-          memoryMdIncluded: built.memoryMdIncluded,
-          taskBlockCount: built.taskBlockCount,
-          filteredTaskBlockCount: built.filteredTaskBlockCount,
-          buildTimestamp: built.buildTimestamp,
-          metadata: built.metadata,
-          messages: built.messages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            content: message.content,
-            timestampIso: message.timestampIso,
-            tokenCount: message.tokenCount,
-            ...(message.contextZone ? { contextZone: message.contextZone } : {}),
-          })),
-        };
-      } catch (error) {
-        contextBuild = {
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-          messages: [],
-        };
-      }
+      const contextBuild = buildSnapshotContextBuild(session?.messages, { targetBudget });
 
       const slotByMessageId = new Map<string, number>();
       for (const item of slotEntries) {

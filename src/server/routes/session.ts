@@ -6,7 +6,6 @@ import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { Attachment } from '../../runtime/events.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
-import { buildContext } from '../../runtime/context-builder.js';
 import { listLedgerSessionsSnapshot } from './ledger-routes-storage.js';
 import {
   hasActiveWorkflowEntry,

@@ -11,19 +11,16 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
- import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
+import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
 import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, SessionStatus } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
 import type { UpdateSessionParams, SessionQuery, SessionStats } from './session-types.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
 import { resolveBaseDir } from '../runtime/context-ledger-memory-helpers.js';
-import { buildSessionView, type SessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
+import { buildSessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
 import { appendDigestForTurn } from '../runtime/context-history-compact.js';
 import { createRustKernelCompactionError } from '../runtime/kernel-owned-compaction.js';
 import { estimateTokens } from '../utils/token-counter.js';
-import { getContextWindow } from '../core/user-settings.js';
-import { loadContextBuilderSettings } from '../core/user-settings.js';
-import { buildContext } from '../runtime/context-builder.js';
 import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 import { inferTagsAndTopic } from '../common/tag-topic-inference.js';
@@ -56,7 +53,7 @@ function stripCorruptSuffix(baseName: string): string {
   return baseName.replace(/\.corrupt(?:[.-].*)?$/i, '');
 }
 
-export class SessionManager  {
+export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private sessionFilePaths: Map<string, string> = new Map();
   private currentSessionId: string | null = null;
@@ -1368,83 +1365,6 @@ session.context = {
     return this.getMessagesFromLedger(session, limit);
   }
 
-  /**
-   * Build session view from ledger via Context Builder / LedgerReader.
-   * Used only when session snapshot needs hydration or explicit async view refresh.
-   */
-  private async getLedgerView(session: Session, options?: { maxTokens?: number; includeSummary?: boolean }): Promise<SessionView> {
-    const ctx = session.context ?? {};
-    const agentId = typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
-    const rootDir = this.resolveSessionsRoot(session);
-    const contextWindow = getContextWindow();
-    const contextBuilder = loadContextBuilderSettings();
-    const maxTokens = options?.maxTokens ?? contextWindow;
-    const latestUserPrompt = this.getLatestUserPromptFromLedgerSync(session, agentId);
-
-    // Context Builder path (default enabled)
-    if (contextBuilder.enabled) {
-      try {
-        const configuredBudget = Number.isFinite(contextBuilder.historyBudgetTokens) && contextBuilder.historyBudgetTokens > 0
-          ? Math.floor(contextBuilder.historyBudgetTokens)
-          : Math.floor(maxTokens * contextBuilder.budgetRatio);
-        const targetBudget = Math.max(1, Math.min(maxTokens, configuredBudget));
-        const built = await buildContext(
-          {
-            rootDir,
-            sessionId: session.id,
-            agentId,
-            mode: 'main',
-            currentPrompt: latestUserPrompt,
-          },
-          {
-            targetBudget,
-            buildMode: contextBuilder.mode,
-            includeMemoryMd: false,
-            enableTaskGrouping: true,
-            enableModelRanking: contextBuilder.enableModelRanking,
-            rankingProviderId: contextBuilder.rankingProviderId,
-          },
-        );
-
-        const mappedMessages: SessionViewMessage[] = [];
-
-        for (const msg of built.messages) {
-          mappedMessages.push({
-            role: msg.role,
-            content: msg.content,
-            tokenCount: msg.tokenCount,
-            messageId: msg.id,
-            timestamp: msg.timestampIso,
-            metadata: msg.contextZone ? { contextZone: msg.contextZone } : undefined,
-          });
-        }
-
-        const total = mappedMessages.reduce((sum, m) => sum + m.tokenCount, 0);
-        return {
-          compressedSummary: undefined,
-          compressedSummaryTokens: undefined,
-          messages: mappedMessages,
-          tokenCount: total,
-          source: {
-            ledgerPath: `${rootDir}/${session.id}/${agentId}/main/context-ledger.jsonl`,
-            compactPath: `${rootDir}/${session.id}/${agentId}/main/compact-memory.jsonl`,
-          },
-        };
-      } catch (err) {
-        log.warn('[SessionManager] Context builder failed, fallback to ledger-reader', {
-          sessionId: session.id,
-          agentId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    return buildSessionView(
-      { rootDir, sessionId: session.id, agentId, mode: 'main' },
-      { maxTokens, includeSummary: options?.includeSummary ?? true },
-    );
-  }
-
   private getMessagesFromLedger(session: Session, limit: number): SessionMessage[] {
     const snapshot = Array.isArray(session.messages) ? session.messages : [];
     if (snapshot.length > 0) {
@@ -1960,28 +1880,6 @@ session.context = {
       previewMessages,
       ...(lastMessageAt ? { lastMessageAt } : {}),
     };
-  }
-
-  private getLatestUserPromptFromLedgerSync(session: Session, agentId: string): string | undefined {
-    const snapshot = this.getMessagesFromLedger(session, 0);
-    if (snapshot.length > 0) {
-      for (let index = snapshot.length - 1; index >= 0; index -= 1) {
-        const message = snapshot[index];
-        if (message.role === 'user' && typeof message.content === 'string' && message.content.trim().length > 0) {
-          return message.content;
-        }
-      }
-      return undefined;
-    }
-
-    const messages = this.readLedgerSessionMessagesSync(session, 0, agentId);
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.role === 'user' && typeof message.content === 'string' && message.content.trim().length > 0) {
-        return message.content;
-      }
-    }
-    return undefined;
   }
 
   private getLedgerMessageCountSync(session: Session): number {

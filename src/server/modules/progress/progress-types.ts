@@ -10,6 +10,7 @@ export interface KernelMetadata {
   history_items_count: number;
   round: number;
   seq: number;
+  context_usage_percent?: number;
 }
 
 export interface ContextBreakdown {

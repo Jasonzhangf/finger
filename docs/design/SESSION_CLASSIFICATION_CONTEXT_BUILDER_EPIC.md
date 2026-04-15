@@ -84,7 +84,8 @@
 ## 相关文件
 
 - `src/common/agent-dispatch.ts` — tags 提取和标准化
-- `src/runtime/context-builder.ts` — tag-aware 排序和 prompt
+- `src/runtime/context-history/rebuild.ts` — 现行 topic / overflow rebuild 入口
+- `src/runtime/context-ledger-memory.ts` — recall / ledger 查询与召回能力
 - `src/runtime/context-builder-embedding-recall.ts` — session-local task embedding index + semantic recall
 - `src/runtime/context-builder-types.ts` — TaskBlock tags/topic 类型
 - `src/server/modules/agent-runtime/dispatch.ts` — ledger metadata 持久化

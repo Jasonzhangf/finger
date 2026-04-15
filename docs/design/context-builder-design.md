@@ -51,6 +51,7 @@ model/tool call
 2. 不再维护 bootstrap / indexed / on-demand 三套拼装结果
 3. `finger-role-modules` 只读取 `Session.messages`
 4. tool 返回的历史必须通过 `replaceMessages()` 成为下一轮唯一可见历史
+5. `SessionManager` 与 `/api/v1/sessions/:sessionId/context-monitor` 也不再调用 `buildContext()`，辅助链只读当前 `Session.messages`
 
 ---
 

@@ -5,7 +5,6 @@ import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { ChatCodexRunnerController } from '../../server/modules/mock-runtime.js';
 import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
 import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
-import { buildContext } from '../../runtime/context-builder.js';
 import { loadContextBuilderSettings } from '../../core/user-settings.js';
 import { estimateTokens } from '../../utils/token-counter.js';
 import {
