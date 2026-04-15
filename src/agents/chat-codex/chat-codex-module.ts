@@ -1204,6 +1204,11 @@ export function createChatCodexModule(
     ...DEFAULT_CONFIG,
     ...config,
   };
+  const sessionManager = mergedConfig.sessionManager ?? (() => {
+    const sm = new SessionManager();
+    return sm as unknown as ISessionManager;
+  })();
+  progressStore.setSessionManager(sessionManager);
 
   const resolveCurrentPromptPaths = () => mergedConfig.resolvePromptPaths?.() ?? {};
   const resolveCodingPrompt = (): string => {
@@ -1395,13 +1400,20 @@ export function createChatCodexModule(
         const round = toNonNegativeInt(payload.round);
         if (round === undefined || round <= 0) return;
         const kernelMetadata: ProgressUpdateEvent['kernelMetadata'] = {
-          input_tokens: toNonNegativeInt(payload.inputTokens) ?? 0,
-          output_tokens: toNonNegativeInt(payload.outputTokens) ?? 0,
-          total_tokens: toNonNegativeInt(payload.totalTokens) ?? 0,
-          context_window: Math.max(1, toNonNegativeInt(payload.maxInputTokens) ?? DEFAULT_CONTEXT_WINDOW_TOKENS),
-          history_items_count: toNonNegativeInt(payload.historyItemsCount) ?? 0,
           round,
-          seq: toNonNegativeInt(payload.seq) ?? 0,
+          ...(toNonNegativeInt(payload.seq) !== undefined ? { seq: toNonNegativeInt(payload.seq) } : {}),
+          ...(toNonNegativeInt(payload.inputTokens) !== undefined ? { input_tokens: toNonNegativeInt(payload.inputTokens) } : {}),
+          ...(toNonNegativeInt(payload.outputTokens) !== undefined ? { output_tokens: toNonNegativeInt(payload.outputTokens) } : {}),
+          ...(toNonNegativeInt(payload.totalTokens) !== undefined ? { total_tokens: toNonNegativeInt(payload.totalTokens) } : {}),
+          ...(toNonNegativeInt(payload.maxInputTokens) !== undefined
+            ? { context_window: Math.max(1, toNonNegativeInt(payload.maxInputTokens) as number) }
+            : {}),
+          ...(toNonNegativeInt(payload.historyItemsCount) !== undefined
+            ? { history_items_count: toNonNegativeInt(payload.historyItemsCount) }
+            : {}),
+          ...(toNonNegativeInt(payload.estimatedTokensInContextWindow) !== undefined
+            ? { estimated_tokens_in_context_window: toNonNegativeInt(payload.estimatedTokensInContextWindow) }
+            : {}),
           ...(resolveContextUsagePercent(payload) !== undefined
             ? { context_usage_percent: resolveContextUsagePercent(payload) }
             : {}),
@@ -2048,10 +2060,7 @@ export function createChatCodexModule(
       contextHistoryProvider: mergedConfig.contextHistoryProvider,
   },
   kernelRunner,
-  mergedConfig.sessionManager ?? (() => {
-    const sm = new SessionManager();
-    return sm as unknown as ISessionManager;
-  })(),
+  sessionManager,
 );
 
   return {

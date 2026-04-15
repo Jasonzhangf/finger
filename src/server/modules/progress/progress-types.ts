@@ -3,14 +3,15 @@
  */
 
 export interface KernelMetadata {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  context_window: number;
-  history_items_count: number;
-  round: number;
-  seq: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  context_window?: number;
+  history_items_count?: number;
+  round?: number;
+  seq?: number;
   context_usage_percent?: number;
+  estimated_tokens_in_context_window?: number;
 }
 
 export interface ContextBreakdown {
@@ -81,6 +82,19 @@ export interface ProgressSnapshot {
   sessionId: string;
   agentId: string;
   projectPath?: string;
+}
+
+export interface PersistedProgressAgentSnapshot {
+  latestKernelMetadata?: KernelMetadata;
+  previousKernelMetadata?: KernelMetadata;
+  contextBreakdown?: ContextBreakdown;
+  lastKernelResponseAt?: string;
+  lastProgressUpdateAt?: string;
+}
+
+export interface PersistedSessionProgressSnapshot {
+  version: 1;
+  byAgent: Record<string, PersistedProgressAgentSnapshot>;
 }
 
 export interface ProgressUpdateEvent {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { UnifiedEventBus } from '../../../src/runtime/event-bus.js';
 import { ProgressMonitor } from '../../../src/server/modules/progress-monitor.js';
+import { progressStore, SESSION_PROGRESS_CONTEXT_KEY } from '../../../src/server/modules/progress/index.js';
 import type { AgentRuntimeDeps } from '../../../src/server/modules/agent-runtime/types.js';
 
 function createMinimalDeps(): AgentRuntimeDeps {
@@ -177,6 +178,103 @@ describe('ProgressMonitor incremental updates', () => {
     expect(latest).not.toContain('尚未收到本轮 model_round');
 
     monitor.stop();
+  });
+
+  it('hydrates last-known-good context snapshot from session context during tool-only progress report', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const sessionId = 'session-hydrated-progress-report';
+    progressStore.clear(sessionId);
+    const deps = {
+      sessionManager: {
+        getSession: vi.fn((id: string) => {
+          if (id !== sessionId) return null;
+          return {
+            id: sessionId,
+            name: 'hydrated-progress-report',
+            projectPath: '/tmp/finger-project',
+            createdAt: '2026-04-15T08:00:00.000Z',
+            updatedAt: '2026-04-15T08:00:00.000Z',
+            lastAccessedAt: '2026-04-15T08:00:00.000Z',
+            messages: [],
+            activeWorkflows: [],
+            context: {
+              [SESSION_PROGRESS_CONTEXT_KEY]: {
+                version: 1,
+                byAgent: {
+                  'finger-system-agent': {
+                    latestKernelMetadata: {
+                      round: 4,
+                      seq: 11,
+                      estimated_tokens_in_context_window: 154000,
+                      context_window: 262144,
+                      context_usage_percent: 58,
+                    },
+                    lastKernelResponseAt: '2026-04-15T08:05:00.000Z',
+                    lastProgressUpdateAt: '2026-04-15T08:05:01.000Z',
+                  },
+                },
+              },
+            },
+            ledgerPath: 'sessions/session-hydrated-progress-report',
+            latestCompactIndex: -1,
+            originalStartIndex: 0,
+            originalEndIndex: -1,
+            totalTokens: 0,
+          };
+        }),
+      } as unknown as AgentRuntimeDeps['sessionManager'],
+      agentRuntimeBlock: {
+        execute: vi.fn(async () => ({ agents: [] })),
+      } as unknown as AgentRuntimeDeps['agentRuntimeBlock'],
+    } as AgentRuntimeDeps;
+    const monitor = new ProgressMonitor(
+      eventBus,
+      deps,
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'hydrated-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'echo hydrate' } },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'hydrated-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'echo hydrate' }, output: 'ok' },
+    } as any);
+
+    await flushEventLoop();
+    await (monitor as any).generateProgressReport();
+
+    expect(reports.length).toBeGreaterThan(0);
+    const latest = reports[reports.length - 1];
+    expect(latest).toContain('🧠 上下文: 58%');
+    expect(latest).toContain('154k/262k');
+    expect(latest).not.toContain('等待模型回传上下文统计');
+
+    monitor.stop();
+    progressStore.clear(sessionId);
   });
 
   it('does not repeat already-reported task/reasoning in next progress update', async () => {

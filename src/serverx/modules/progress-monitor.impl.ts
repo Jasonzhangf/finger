@@ -635,6 +635,7 @@ export class ProgressMonitor {
       progressUpdates: config?.progressUpdates ?? DEFAULT_PROGRESS_MONITOR_CONFIG.progressUpdates,
       contextBreakdownMode: config?.contextBreakdownMode ?? DEFAULT_PROGRESS_MONITOR_CONFIG.contextBreakdownMode,
     };
+    progressStore.setSessionManager(this.deps.sessionManager);
   }
 
   start(): void {
@@ -1037,7 +1038,8 @@ export class ProgressMonitor {
     for (const p of activeProgress) {
       // 仅在 progressStore 缺失或上下文占用率不一致时输出诊断，避免在循环中高频打 info。
       const psEntry = progressStore.get(p.sessionId, p.agentId);
-      const psContextUsagePercent = psEntry?.latestKernelMetadata?.context_usage_percent;
+      const psKernelMetadata = progressStore.getKernelMetadata(p.sessionId, p.agentId);
+      const psContextUsagePercent = psKernelMetadata?.context_usage_percent;
       const hasContextUsageMismatch = psEntry && psContextUsagePercent !== p.contextUsagePercent;
       if (p.sessionId && (!psEntry || hasContextUsageMismatch)) {
         log.debug('[ProgressMonitor] progressStore context diagnostic', {
@@ -1045,6 +1047,8 @@ export class ProgressMonitor {
           agentId: p.agentId,
           hasPsEntry: !!psEntry,
           psContextUsagePercent,
+          psEstimatedTokens: psKernelMetadata?.estimated_tokens_in_context_window,
+          psMaxInputTokens: psKernelMetadata?.context_window,
           pContextUsagePercent: p.contextUsagePercent,
           pEstimatedTokens: p.estimatedTokensInContextWindow,
           pMaxInputTokens: p.maxInputTokens,
@@ -1210,6 +1214,8 @@ export class ProgressMonitor {
     const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
     const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
     const includeTaskFallback = toolsToShow.length === 0 && !reasoningChanged;
+    const storedProgress = progressStore.get(p.sessionId, p.agentId);
+    const storedKernelMetadata = progressStore.getKernelMetadata(p.sessionId, p.agentId);
     const data: SessionProgressData = {
       agentId: p.agentId,
       status: p.status,
@@ -1223,12 +1229,13 @@ export class ProgressMonitor {
         success: t.success,
       })),
       latestReasoning: p.latestReasoning,
-      // 从 progressStore 提取最新的 context_usage_percent（唯一真源）
-      contextUsagePercent: progressStore.get(p.sessionId, p.agentId)?.latestKernelMetadata?.context_usage_percent ?? p.contextUsagePercent,
-      estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
-      maxInputTokens: p.maxInputTokens,
+      // 从 progressStore 提取 last-known-good context snapshot（唯一真源）
+      contextUsagePercent: storedKernelMetadata?.context_usage_percent ?? p.contextUsagePercent,
+      estimatedTokensInContextWindow:
+        storedKernelMetadata?.estimated_tokens_in_context_window ?? p.estimatedTokensInContextWindow,
+      maxInputTokens: storedKernelMetadata?.context_window ?? p.maxInputTokens,
       lastContextEvent: includeContextEvent ? p.lastContextEvent : undefined,
-      contextBreakdown: progressStore.get(p.sessionId, p.agentId)?.contextBreakdown ?? p.contextBreakdown,
+      contextBreakdown: storedProgress?.contextBreakdown ?? p.contextBreakdown,
       contextBreakdownMode: this.config.contextBreakdownMode,
       controlTags: p.controlTags,
       controlHookNames: p.controlHookNames,
