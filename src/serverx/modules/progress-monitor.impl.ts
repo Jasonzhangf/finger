@@ -1006,6 +1006,13 @@ export class ProgressMonitor {
           return age < this.config.intervalMs * 2;
         });
         const isQueuedWithPending = false; // SessionProgress.status does not have 'queued' state
+
+   // Debug log for team status
+   log.info('[ProgressMonitor] Team status loaded:', {
+     teamStatusCount: teamStatus.length,
+     teamStatusAgents: teamStatus.map(a => a.agentId),
+   });
+
         const isRunningOrRecentlyActive = p.status === 'running' || (p.status === 'idle' && recentlyActiveTools);
         if (!isRunningOrRecentlyActive) return false;
        p.elapsedMs = Math.max(0, now - p.startTime);

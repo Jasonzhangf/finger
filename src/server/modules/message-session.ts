@@ -254,7 +254,13 @@ export function shouldRetryBlockingMessage(errorMessage: string): boolean {
   if (normalized.includes('unauthorized')) return false;
  if (normalized.includes('forbidden')) return false;
   // context overflow / need rebuild: 触发 rebuild 后 retry
-  if (normalized.includes('context_overflow') || normalized.includes('need context rebuild')) return true;
+  if (
+    normalized.includes('context_overflow')
+    || normalized.includes('need context rebuild')
+    || normalized.includes('range of input')
+    || normalized.includes('too many total text tokens')
+    || normalized.includes('invalidparameter')
+  ) return true;
 
  const inferredStatus = extractHttpStatusFromError(errorMessage);
   if (inferredStatus !== undefined) {

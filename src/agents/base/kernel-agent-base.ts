@@ -47,7 +47,8 @@ import {
   resolveControlBlockPolicy,
   shouldHoldStopByControlBlock,
 } from '../../common/control-block.js';
-import { getContextWindow, getCompressTokenThreshold } from '../../core/user-settings.js';
+import { getContextWindow } from '../../core/user-settings.js';
+import { forceRebuild } from '../../runtime/context-history/index.js';
 
 
 export interface KernelRunContext {
@@ -224,10 +225,10 @@ export class KernelAgentBase {
         threadKey,
         threadMode,
       });
-      const contextHistoryMetadata = resolvedHistory.contextHistoryMetadata;
-      const history = resolvedHistory.history;
-      const mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
-      const historyBreakdown = summarizeHistoryBreakdown(mergedHistory);
+      let contextHistoryMetadata = resolvedHistory.contextHistoryMetadata;
+      let history = resolvedHistory.history;
+      let mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
+      let historyBreakdown = summarizeHistoryBreakdown(mergedHistory);
       activeHistoryForLock = mergedHistory;
       activeHistoryMetadataForLock = contextHistoryMetadata;
       await this.restoreApiHistoryForThreadIfNeeded(runnerSessionId, threadKey);
@@ -236,49 +237,124 @@ export class KernelAgentBase {
         : null;
       const tools = this.resolveTools(input.tools, roleProfile, input.metadata);
       const stopReasoningPolicy = resolveStopReasoningPolicy(effectiveInputMetadata);
-      const contextSlots = composeTurnContextSlots({
-        cacheKey: session.id,
-        userInput: input.text,
-        history: toUnifiedHistory(mergedHistory),
-        tools,
-        metadata: effectiveInputMetadata,
-      });
-      const slotMetadata = contextSlots
-        ? {
-            contextSlotIds: contextSlots.slotIds,
-            contextSlotTrimmedIds: contextSlots.trimmedSlotIds,
-          }
-        : undefined;
-      const runtimeMetadata = this.buildRuntimeMetadata({
-        inputMetadata: effectiveInputMetadata,
-        roleProfileId: roleProfile?.id,
-        mode: threadMode,
-        threadKey,
-        sessionId: runnerSessionId,
+      const buildPromptArtifacts = () => {
+        const nextContextSlots = composeTurnContextSlots({
+          cacheKey: session.id,
+          userInput: input.text,
+          history: toUnifiedHistory(mergedHistory),
+          tools,
+          metadata: effectiveInputMetadata,
+        });
+        const nextSlotMetadata = nextContextSlots
+          ? {
+              contextSlotIds: nextContextSlots.slotIds,
+              contextSlotTrimmedIds: nextContextSlots.trimmedSlotIds,
+            }
+          : undefined;
+        const nextRuntimeMetadata = this.buildRuntimeMetadata({
+          inputMetadata: effectiveInputMetadata,
+          roleProfileId: roleProfile?.id,
+          mode: threadMode,
+          threadKey,
+          sessionId: runnerSessionId,
+          slotMetadata: nextSlotMetadata,
+          extra: contextHistoryMetadata,
+          historyBreakdown,
+          contextSlotsRendered:
+            this.config.appendContextSlotsToSystemPrompt === false
+              ? nextContextSlots?.rendered
+              : undefined,
+          stopReasoningPolicy,
+        });
+        const nextStopReasoningPrompt = this.buildStopReasoningPrompt({
+          tools,
+          metadata: nextRuntimeMetadata,
+        });
+        const nextControlBlockPrompt = this.buildControlBlockPrompt(nextRuntimeMetadata);
+        const nextSystemPrompt = this.appendPromptSections(
+          this.buildSystemPrompt(
+            roleProfile,
+            this.config.appendContextSlotsToSystemPrompt === false ? undefined : nextContextSlots?.rendered,
+          ),
+          nextStopReasoningPrompt,
+          nextControlBlockPrompt,
+        );
+        return {
+          contextSlots: nextContextSlots,
+          slotMetadata: nextSlotMetadata,
+          runtimeMetadata: nextRuntimeMetadata,
+          stopReasoningPrompt: nextStopReasoningPrompt,
+          controlBlockPrompt: nextControlBlockPrompt,
+          systemPrompt: nextSystemPrompt,
+        };
+      };
+
+      let {
+        contextSlots,
         slotMetadata,
-        extra: contextHistoryMetadata,
-        historyBreakdown,
-        contextSlotsRendered:
-          this.config.appendContextSlotsToSystemPrompt === false
-            ? contextSlots?.rendered
-            : undefined,
-        stopReasoningPolicy,
-      });
-      const stopReasoningPrompt = this.buildStopReasoningPrompt({
-        tools,
-        metadata: runtimeMetadata,
-      });
-      const controlBlockPrompt = this.buildControlBlockPrompt(runtimeMetadata);
-      const systemPrompt = this.appendPromptSections(
-        this.buildSystemPrompt(
-          roleProfile,
-          this.config.appendContextSlotsToSystemPrompt === false ? undefined : contextSlots?.rendered,
-        ),
+        runtimeMetadata,
         stopReasoningPrompt,
         controlBlockPrompt,
-      );
-      // Preflight compact 已下沉到 ProcessChatCodexRunner（唯一真源）
-      // 此处不再做重复检查
+        systemPrompt,
+      } = buildPromptArtifacts();
+
+      const contextWindowTokens = getContextWindow();
+      const preflight = this.checkPreflightCompact({
+        estimatedContextTokens: this.estimateContextTokensBeforeTurn({
+          session,
+          mergedHistory,
+          systemPrompt: systemPrompt ?? '',
+          inputText: input.text,
+        }),
+        thresholdTokens: Math.floor(contextWindowTokens * 0.85),
+        contextWindowTokens,
+        existingMetadata: effectiveInputMetadata,
+      });
+      if (preflight.needCompact) {
+        const sessionManagerWithRoot = this.sessionManager as ISessionManager & {
+          resolveLedgerRootForSession?: (sessionId: string) => string | null;
+        };
+        const ledgerRoot = typeof sessionManagerWithRoot.resolveLedgerRootForSession === 'function'
+          ? sessionManagerWithRoot.resolveLedgerRootForSession(session.id)
+          : session.projectPath.startsWith(FINGER_PATHS.system.dir)
+            ? FINGER_PATHS.system.sessionsDir
+            : FINGER_PATHS.sessions.dir;
+        if (typeof ledgerRoot === 'string' && ledgerRoot.trim().length > 0) {
+          const ledgerPath = path.join(ledgerRoot, session.id, this.config.moduleId, threadMode, 'context-ledger.jsonl');
+          const rebuildResult = await forceRebuild(
+            session.id,
+            ledgerPath,
+            'overflow',
+            input.text,
+            undefined,
+            20000,
+            history,
+          );
+          if (rebuildResult.ok) {
+            this.sessionManager.replaceMessages(session.id, rebuildResult.messages);
+            history = rebuildResult.messages;
+            mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
+            historyBreakdown = summarizeHistoryBreakdown(mergedHistory);
+            contextHistoryMetadata = {
+              ...(contextHistoryMetadata ?? {}),
+              contextHistorySource: 'context_history_single_source',
+              contextHistoryMode: 'overflow',
+              contextHistoryDigestCount: rebuildResult.digestCount,
+              contextHistoryRawMessageCount: rebuildResult.rawMessageCount,
+            };
+            activeHistoryForLock = mergedHistory;
+            activeHistoryMetadataForLock = contextHistoryMetadata;
+            ({
+              contextSlots,
+              slotMetadata,
+              runtimeMetadata,
+              stopReasoningPrompt,
+              controlBlockPrompt,
+              systemPrompt,
+            } = buildPromptArtifacts());
+          }
+        }
+      }
 
       const inputItems = this.parseInputItems(input.metadata);
       const mailboxSnapshot = this.parseMailboxSnapshot(input.metadata?.mailboxSnapshot);
@@ -574,19 +650,13 @@ export class KernelAgentBase {
       : null;
     const contextHistoryMetadata = extractContextHistoryMetadata(providedHistory);
     const history = Array.isArray(providedHistory)
-      ? maybeCompressHistoryToTaskDigests(
-          providedHistory.map((item, idx) => ({
-            id: item.id ?? `ctx-${Date.now()}-${idx}`,
-            role: item.role,
-            content: item.content,
-            timestamp: item.timestamp ?? new Date().toISOString(),
-            metadata: item.metadata,
-          })),
-          {
-            ...(params.inputMetadata ?? {}),
-            ...(contextHistoryMetadata ?? {}),
-          },
-        )
+      ? providedHistory.map((item, idx) => ({
+          id: item.id ?? 'ctx-' + String(Date.now()) + '-' + String(idx),
+          role: item.role,
+          content: item.content,
+          timestamp: item.timestamp ?? new Date().toISOString(),
+          metadata: item.metadata,
+        }))
       : await this.sessionManager.getMessageHistory(params.sessionId, this.config.maxContextMessages);
     return {
       history,
@@ -721,24 +791,16 @@ export class KernelAgentBase {
       }
     }
 
-    const existingApiHistory = this.getApiHistoryForThread(params.sessionId, params.threadKey);
-    if (!hasMediaInput && existingApiHistory && existingApiHistory.length > 0) {
-      metadata.kernelApiHistory = existingApiHistory;
-    }
-
     if (hasMediaInput) {
       delete metadata.kernelApiHistory;
       metadata.kernelApiHistoryBypassed = true;
       metadata.kernelApiHistoryBypassedReason = 'media_input';
     }
 
-
-    // Add context_window config for kernel auto-compact
     const contextWindow = getContextWindow();
     metadata.context_window = {
       max_input_tokens: contextWindow,
       baseline_tokens: 0,
-      auto_compact_threshold_ratio: 0.85,
     };
 
     return metadata;
@@ -2035,175 +2097,6 @@ function isKernelTurnUnfinished(metadata?: Record<string, unknown>): boolean {
     : '';
   if (responseStatus.length > 0 && responseStatus !== 'completed') return true;
 
-  return false;
-}
-
-function maybeCompressHistoryToTaskDigests(
-  history: SessionMessage[],
-  metadata?: Record<string, unknown>,
-): SessionMessage[] {
-  const enabled = metadata?.contextHistoryDigestEnabled !== false
-    && metadata?.historyDigestEnabled !== false;
-  if (!enabled) return history;
-  if (!Array.isArray(history) || history.length === 0) return history;
-
-  const source = typeof metadata?.contextHistorySource === 'string'
-    ? metadata.contextHistorySource.trim().toLowerCase()
-    : '';
-  const isHistoryView = source.startsWith('context_builder')
-    || source === 'session_view_passthrough'
-    || source === 'session_view_fallback'
-    || metadata?.contextBuilderBypassed === true
-    || metadata?.contextBuilderRebuilt === true;
-  if (!isHistoryView) return history;
-
-  // Design rule: task digest compression is only applied on rebuild turns.
-  // Normal continuation turns must preserve recent full-fidelity messages
-  // to avoid losing near-term execution/tool context.
-  const rebuiltThisTurn = metadata?.contextBuilderRebuilt === true
-    || source === 'context_builder_on_demand'
-    || source === 'context_builder_bootstrap';
-  if (!rebuiltThisTurn) return history;
-
-  const grouped: SessionMessage[][] = [];
-  let current: SessionMessage[] = [];
-  for (const item of history) {
-    const content = typeof item.content === 'string' ? item.content.trim() : '';
-    if (content.length === 0) continue;
-    if (item.role === 'user' && current.length > 0) {
-      grouped.push(current);
-      current = [item];
-      continue;
-    }
-    current.push(item);
-  }
-  if (current.length > 0) grouped.push(current);
-  if (grouped.length === 0) return history;
-
-  const keepRecentTaskCount = 2;
-  const keepRecentFrom = Math.max(0, grouped.length - keepRecentTaskCount);
-  const output: SessionMessage[] = [];
-
-  for (let index = 0; index < grouped.length; index += 1) {
-    const task = grouped[index];
-    const preserveFullTask = index >= keepRecentFrom || taskContainsCriticalLifecycleSignals(task);
-    if (preserveFullTask) {
-      output.push(...task);
-      continue;
-    }
-
-    const firstUser = task.find((item) => item.role === 'user')?.content ?? task[0]?.content ?? '';
-    const lastAssistant = [...task].reverse().find((item) => item.role === 'assistant')?.content
-      ?? task[task.length - 1]?.content
-      ?? '';
-    const startTs = task[0]?.timestamp ?? new Date().toISOString();
-    const endTs = task[task.length - 1]?.timestamp ?? startTs;
-    const slotRange = resolveTaskSlotRange(task);
-    const taskId = task[0]?.id ?? `task-${index + 1}`;
-    const lines = [
-      `[task_digest ${index + 1}/${grouped.length}] id=${taskId}`,
-      `request: ${compressDigestText(firstUser, 260)}`,
-      `finish_summary: ${compressDigestText(lastAssistant, 260)}`,
-      `time: ${startTs} -> ${endTs}`,
-      slotRange
-        ? `ledger_slots: ${slotRange.start}-${slotRange.end}`
-        : 'ledger_slots: unknown',
-      slotRange
-        ? `expand_hint: context_ledger.expand_task { slot_start: ${slotRange.start}, slot_end: ${slotRange.end} }`
-        : 'expand_hint: use context_ledger.memory search/query(detail=true) to expand this task.',
-    ];
-    output.push({
-      id: `digest-${taskId}-${index + 1}`,
-      role: 'assistant',
-      content: lines.join('\n'),
-      timestamp: endTs,
-      metadata: {
-        taskDigest: true,
-        taskDigestIndex: index + 1,
-        taskDigestTotal: grouped.length,
-        taskDigestTaskId: taskId,
-        ...(slotRange ? { taskDigestSlotStart: slotRange.start, taskDigestSlotEnd: slotRange.end } : {}),
-      },
-    } satisfies SessionMessage);
-  }
-  return output;
-}
-
-function resolveTaskSlotRange(task: SessionMessage[]): { start: number; end: number } | undefined {
-  const slots = task
-    .map((item) => {
-      const direct = item.metadata?.contextLedgerSlot;
-      const fallback = item.metadata?.slot;
-      if (typeof direct === 'number' && Number.isFinite(direct) && direct > 0) return Math.floor(direct);
-      if (typeof fallback === 'number' && Number.isFinite(fallback) && fallback > 0) return Math.floor(fallback);
-      return null;
-    })
-    .filter((item): item is number => item !== null);
-  if (slots.length === 0) return undefined;
-  return {
-    start: Math.min(...slots),
-    end: Math.max(...slots),
-  };
-}
-
-function compressDigestText(text: string, maxLen: number): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= maxLen) return normalized;
-  return `${normalized.slice(0, maxLen)}...`;
-}
-
-const CRITICAL_LIFECYCLE_TOOLS = new Set([
-  'update_plan',
-  'agent.dispatch',
-  'dispatch',
-  'report-task-completion',
-  'project.task.status',
-  'project.task.update',
-]);
-
-const CRITICAL_LIFECYCLE_PATTERNS: RegExp[] = [
-  /\bupdate_plan\b/i,
-  /\bagent\.dispatch\b/i,
-  /\bdispatch\b/i,
-  /\breport-task-completion\b/i,
-  /\bproject\.task\.(status|update)\b/i,
-  /\btask[_\s-]?completed\b/i,
-  /\btask[_\s-]?result\b/i,
-  /\breview(er)?\s+(result|pass|passed|reject|rejected|block|blocked)\b/i,
-  /\bdecision:\s*(pass|passed|reject|rejected|block|blocked)\b/i,
-  /审核(通过|拒绝|驳回|结论)/,
-  /任务(完成|结果|交付)/,
-];
-
-function taskContainsCriticalLifecycleSignals(task: SessionMessage[]): boolean {
-  for (const item of task) {
-    const content = typeof item.content === 'string' ? item.content : '';
-    if (CRITICAL_LIFECYCLE_PATTERNS.some((pattern) => pattern.test(content))) {
-      return true;
-    }
-
-    const metadata = item.metadata;
-    if (!metadata || typeof metadata !== 'object') continue;
-
-    const toolTrace = Array.isArray(metadata.tool_trace) ? metadata.tool_trace : [];
-    for (const trace of toolTrace) {
-      if (!isRecord(trace)) continue;
-      const toolName = typeof trace.tool === 'string' ? trace.tool.trim() : '';
-      if (toolName.length > 0 && CRITICAL_LIFECYCLE_TOOLS.has(toolName)) {
-        return true;
-      }
-    }
-
-    const toolName = typeof metadata.toolName === 'string' ? metadata.toolName.trim() : '';
-    if (toolName.length > 0 && CRITICAL_LIFECYCLE_TOOLS.has(toolName)) {
-      return true;
-    }
-
-    const eventType = typeof metadata.eventType === 'string' ? metadata.eventType.trim().toLowerCase() : '';
-    if (eventType === 'task_completed' || eventType === 'task_result' || eventType === 'review_result') {
-      return true;
-    }
-  }
   return false;
 }
 

@@ -7,7 +7,8 @@ import {
   resolveBlockingErrorStatus,
   shouldRetryBlockingMessage,
 } from '../modules/message-session.js';
-import { executeContextRebuild, estimateMessageTokens, compressCurrentHistory, extractPromptFromPayload } from '../../runtime/context-rebuild-executor.js';
+import { forceRebuild } from '../../runtime/context-history/index.js';
+import { resolveLedgerPath } from '../../runtime/context-ledger-memory-helpers.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import path from 'path';
 import { sendDisplayFanout } from './message-display.js';
@@ -22,6 +23,25 @@ import {
 import type { DisplayChannelRequest, MessageRouteDeps } from './message-types.js';
 
 const log = logger.module('message-route-execution');
+
+function extractPromptFromPayload(input: Record<string, unknown>): string {
+  const promptFields = ['prompt', 'query', 'input', 'text', 'content', 'message'];
+  for (const field of promptFields) {
+    const value = input[field];
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  }
+  return '';
+}
+
+function isPayloadOverflowError(errorMessage: string): boolean {
+  const normalized = errorMessage.toLowerCase();
+  return normalized.includes('need context rebuild')
+    || normalized.includes('context_overflow')
+    || normalized.includes('range of input')
+    || normalized.includes('too many total text tokens')
+    || (normalized.includes('http 400') && normalized.includes('invalidparameter'));
+}
+
 
 function buildResponsePayload(params: {
   result: unknown;
@@ -163,65 +183,46 @@ export async function executeBlockingMessageRoute(params: {
     } catch (err) {
      const errorMessage = err instanceof Error ? err.message : String(err);
      lastError = err instanceof Error ? err : new Error(errorMessage);
-     const canRetry = shouldRetryBlockingMessage(errorMessage) && attempt < params.deps.blockingMaxRetries;
-      
-     // Payload 超限需要触发 context rebuild
-     // HTTP 400 InvalidParameter 或 payload 超限错误
-     const isPayloadOverflow = errorMessage.includes('need context rebuild')
-       || errorMessage.includes('HTTP 400')
-       || errorMessage.includes('InvalidParameter')
-       || errorMessage.includes('Range of input');
+     const isPayloadOverflow = isPayloadOverflowError(errorMessage);
+     const canRetry = (shouldRetryBlockingMessage(errorMessage) || isPayloadOverflow) && attempt < params.deps.blockingMaxRetries;
+
      if (isPayloadOverflow && params.requestSessionId) {
-       log.info('Payload exceeds limit, triggering context rebuild before retry', {
+       log.info('Payload exceeds limit, triggering single-source context rebuild before retry', {
          sessionId: params.requestSessionId,
          targetId: params.targetId,
          attempt,
        });
        try {
-          // 从 requestMessage 提取 prompt
-          const prompt = extractPromptFromPayload(params.requestMessage as Record<string, unknown>) || '';
-          
-          // 执行 context rebuild
-          const rebuildResult = await executeContextRebuild(
+          const prompt = isObjectRecord(params.requestMessage)
+            ? extractPromptFromPayload(params.requestMessage)
+            : '';
+          const ledgerRoot = params.deps.sessionManager.resolveLedgerRootForSession(params.requestSessionId)
+            ?? (params.targetId === 'finger-system-agent'
+              ? path.join(FINGER_PATHS.home, 'system', 'sessions')
+              : FINGER_PATHS.sessions.dir);
+          const ledgerPath = resolveLedgerPath(ledgerRoot, params.requestSessionId, params.targetId, 'main');
+          const currentMessages = params.deps.sessionManager.getMessages(params.requestSessionId, 0);
+          const rebuildResult = await forceRebuild(
             params.requestSessionId,
-            params.targetId,
+            ledgerPath,
+            'overflow',
             prompt,
-            {
-              topK: 20,
-              maxTokens: 50000,
-            }
+            undefined,
+            20000,
+            currentMessages,
           );
-         
-         if (rebuildResult.ok && rebuildResult.rankedBlocks.length > 0) {
-           // 用 rebuild 结果更新 requestMessage 的 history_items
-            const rebuiltHistory = rebuildResult.rankedBlocks.map(block => ({
-              role: 'assistant',
-              content: block.messages.map(m => m.content).join('\n'),
-              timestamp: block.startTimeIso,
-              tokenCount: block.tokenCount,
-            }));
-            
-            // 更新 requestMessage
-            if (isObjectRecord(params.requestMessage)) {
-              const metadata = isObjectRecord(params.requestMessage.metadata) ? params.requestMessage.metadata : {};
-              params.requestMessage = {
-                ...params.requestMessage,
-                metadata: {
-                  ...metadata,
-                  rebuiltHistory,
-                  contextRebuildTriggered: true,
-                },
-              };
-              log.info('Context rebuild completed, history updated', {
-                sessionId: params.requestSessionId,
-                blocksCount: rebuildResult.rankedBlocks.length,
-                tokensUsed: rebuildResult.tokensUsed,
-              });
-            }
-          } else {
-            log.warn('Context rebuild failed or returned empty results', {
+
+          if (rebuildResult.ok) {
+            params.deps.sessionManager.replaceMessages(params.requestSessionId, rebuildResult.messages);
+            log.info('Context rebuild completed and persisted to session snapshot', {
               sessionId: params.requestSessionId,
-              ok: rebuildResult.ok,
+              digestCount: rebuildResult.digestCount,
+              rawMessageCount: rebuildResult.rawMessageCount,
+              totalTokens: rebuildResult.totalTokens,
+            });
+          } else {
+            log.warn('Context rebuild failed during blocking retry path', {
+              sessionId: params.requestSessionId,
               error: rebuildResult.error,
             });
           }
@@ -231,7 +232,7 @@ export async function executeBlockingMessageRoute(params: {
           });
         }
       }
-      
+
      if (!canRetry) break;
       const backoffMs = Math.min(30_000, Math.floor(params.deps.blockingRetryBaseMs * Math.pow(2, attempt)));
       attempt += 1;

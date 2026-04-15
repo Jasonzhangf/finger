@@ -279,10 +279,19 @@ export async function sendStatusUpdate(
 
       const teamStatusSummary = buildTeamStatusSummary(statusUpdate.teamStatus);
 
+      // Debug log for team status
+      log.info('[AgentStatusSubscriber] Building team status summary:', {
+        hasTeamStatus: !!statusUpdate.teamStatus,
+        teamStatusCount: statusUpdate.teamStatus?.length ?? 0,
+        teamStatusSummaryLength: teamStatusSummary?.length ?? 0,
+        teamStatusPreview: teamStatusSummary?.substring(0, 100) ?? 'undefined',
+      });
+
+
       const text = joinUniqueLines([
+        teamStatusSummary,
         statusUpdate.display.title,
         statusUpdate.status.summary,
-        teamStatusSummary,
         statusUpdate.display.subtitle,
       ]);
       const displayText = applyContextDisplayMode(text, displaySettings.context);

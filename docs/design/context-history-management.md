@@ -357,4 +357,4 @@ current.history (超限) + 换话题
 3. 拆分代码到独立模块
 4. 编写单元测试（覆盖测试矩阵 T1-T14）
 5. 集成到 runtime-facade.ts
-6. 删除旧代码（context-rebuild-executor.ts 相关逻辑）
+6. 删除旧代码（src/runtime/context-history/* 相关逻辑）

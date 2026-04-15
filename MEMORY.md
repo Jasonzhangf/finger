@@ -139,3 +139,31 @@
 3. **唯一真源原则**：Ledger 是唯一源，Session 是动态视图
 4. **Progress 报告**：消费数据，不参与数据产生
 
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776222260700|hook.project.memory.update
+- updated_at: 2026-04-15T03:04:20.798Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776222260700
+- long_term: ledger 路径不存在时需查证实际 ledger 位置和覆盖范围，避免伪完成
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776222585405|hook.project.memory.update
+- updated_at: 2026-04-15T03:09:45.501Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776222585405
+- long_term: verify-ledger-existence-before-analysis
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776222763557|hook.project.memory.update
+- updated_at: 2026-04-15T03:12:43.651Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776222763557
+- long_term: Mailbox notification already processed in earlier turn; always verify output file existence before re-processing
+
+## Control Hook Memory Patch
+- idempotency_key: hb-session-finger-project-agent-finger-main|turn-1776223212198|hook.project.memory.update
+- updated_at: 2026-04-15T03:20:12.252Z
+- source_session: hb-session-finger-project-agent-finger-main
+- source_turn: turn-1776223212198
+- long_term: 指定时间范围与 ledger 实际时间戳需交叉验证

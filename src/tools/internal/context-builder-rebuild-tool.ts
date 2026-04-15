@@ -1,18 +1,16 @@
 import { join } from 'path';
-import { buildContext } from '../../runtime/context-builder.js';
 import { getContextWindow, loadContextBuilderSettings } from '../../core/user-settings.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
-import { setContextBuilderOnDemandView } from '../../runtime/context-builder-on-demand-state.js';
+import { forceRebuild, tokenizeUserInput } from '../../runtime/context-history/index.js';
+import { hasSessionLock } from '../../runtime/context-history/lock.js';
+import { normalizeRootDirForAgent, resolveLedgerPath } from '../../runtime/context-ledger-memory-helpers.js';
+import type { SessionMessage } from '../../orchestration/session-types.js';
 import type { InternalTool, ToolExecutionContext } from './types.js';
-
-import { acquireSessionLock, releaseSessionLock, hasSessionLock } from '../../runtime/context-history/lock.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('ContextBuilderRebuild');
-
-const REBUILD_RATE_LIMIT_MS = 5 * 60 * 1000; // 5 minutes
+const REBUILD_RATE_LIMIT_MS = 5 * 60 * 1000;
 const sessionRebuildTimestamps = new Map<string, number>();
-
 
 interface ContextBuilderRebuildInput {
   session_id?: string;
@@ -27,24 +25,15 @@ interface ContextBuilderRebuildInput {
   _runtime_context?: Record<string, unknown>;
 }
 
-interface RuntimeContextSessionMessage {
-  id?: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp: string;
-  metadata?: Record<string, unknown>;
-  attachments?: unknown[];
-}
-
 interface ContextBuilderRebuildOutput {
   ok: boolean;
   action: 'rebuild' | 'skipped';
-  reason?: 'rate_limited' | 'rebuild_already_in_progress' | 'lock_acquisition_failed';
+  reason?: 'rate_limited' | 'rebuild_already_in_progress' | 'rebuild_failed';
   sessionId: string;
   agentId: string;
-  buildMode?: 'minimal' | 'moderate' | 'aggressive';
   targetBudget: number;
   metadata?: Record<string, unknown>;
+  buildMode?: 'topic' | 'overflow';
   selectedBlockIds: string[];
   rateLimitSeconds?: number;
   appliesNextTurn?: boolean;
@@ -55,10 +44,11 @@ interface ContextBuilderRebuildOutput {
     contextZone?: 'working_set' | 'historical_memory';
     contentPreview: string;
   }>;
+  __rebuiltMessages?: SessionMessage[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && Array.isArray(value) === false;
 }
 
 function parseInput(rawInput: unknown): ContextBuilderRebuildInput {
@@ -82,107 +72,78 @@ function parseInput(rawInput: unknown): ContextBuilderRebuildInput {
 function resolveRootDir(input: ContextBuilderRebuildInput, agentId: string, context: ToolExecutionContext): string {
   const runtimeRoot = input._runtime_context?.root_dir;
   if (typeof runtimeRoot === 'string' && runtimeRoot.trim().length > 0) return runtimeRoot;
-
   if (agentId === 'finger-system-agent') {
     return join(FINGER_PATHS.home, 'system', 'sessions');
   }
-
   if (context.cwd.startsWith(join(FINGER_PATHS.home, 'system'))) {
     return join(FINGER_PATHS.home, 'system', 'sessions');
   }
   return FINGER_PATHS.sessions.dir;
 }
 
-function parseRuntimeSessionMessages(
-  runtimeContext: Record<string, unknown> | undefined,
-): RuntimeContextSessionMessage[] | undefined {
+function parseRuntimeSessionMessages(runtimeContext: Record<string, unknown> | undefined): SessionMessage[] {
   const raw = runtimeContext?.session_messages;
-  if (!Array.isArray(raw) || raw.length === 0) return undefined;
-  const parsed = raw
-    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, unknown> => isRecord(item))
     .map((item, index) => {
       const roleRaw = typeof item.role === 'string' ? item.role.trim() : '';
-      const role: RuntimeContextSessionMessage['role'] =
-        roleRaw === 'assistant' || roleRaw === 'system'
-          ? roleRaw
-          : 'user';
-      const content = typeof item.content === 'string' ? item.content : '';
+      const role: SessionMessage['role'] = roleRaw === 'assistant' || roleRaw === 'system' ? roleRaw : 'user';
       const timestamp = typeof item.timestamp === 'string' && item.timestamp.trim().length > 0
         ? item.timestamp
         : new Date(Date.now() + index).toISOString();
-      const metadata = item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
-        ? item.metadata as Record<string, unknown>
-        : undefined;
+      const metadata = isRecord(item.metadata) ? item.metadata : undefined;
       const attachments = Array.isArray(item.attachments) ? item.attachments : undefined;
       return {
-        ...(typeof item.id === 'string' && item.id.trim().length > 0 ? { id: item.id } : {}),
+        id: typeof item.id === 'string' && item.id.trim().length > 0 ? item.id : 'runtime-' + String(index + 1),
         role,
-        content,
+        content: typeof item.content === 'string' ? item.content : '',
         timestamp,
         ...(metadata ? { metadata } : {}),
         ...(attachments ? { attachments } : {}),
-      } satisfies RuntimeContextSessionMessage;
+      } satisfies SessionMessage;
     })
     .filter((item) => item.content.trim().length > 0);
-  return parsed.length > 0 ? parsed : undefined;
+}
+
+function resolvePrompt(input: ContextBuilderRebuildInput, sessionMessages: SessionMessage[]): string {
+  if (typeof input.current_prompt === 'string' && input.current_prompt.trim().length > 0) {
+    return input.current_prompt.trim();
+  }
+  const latestUser = [...sessionMessages].reverse().find((message) => message.role === 'user');
+  return latestUser?.content?.trim() ?? '';
 }
 
 export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebuildOutput> = {
   name: 'context_builder.rebuild',
   executionModel: 'state',
-  description: [
-    'Rebuild dynamic history context from ledger for the current session.',
-    '',
-    '⚠️ CRITICAL: This tool should ONLY be called in USER INPUT rounds (when user sends a message).',
-    'DO NOT call this tool during tool execution loops or model response rounds.',
-    '',
-    'Trigger rules (conservative):',
-    '- Only call when user explicitly switches to a NEW topic',
-    '- Do NOT call for consecutive rounds of the SAME task',
-    '- Rate limit: max 1 call per 5 minutes per session',
-    '',
-    'Valid scenarios:',
-    '- User says "lets talk about something else" or "next topic"',
-    '- User request is completely unrelated to current task',
-    '- control_block.new_topic=true detected in user input',
-    '',
-    'Invalid scenarios (DO NOT call):',
-    '- Same task continuation ("continue", "next step")',
-    '- Tool execution loops',
-    '- Heartbeat/system tasks',
-    '',
-    'Default history budget is 20k tokens.',
-    'For coding tasks: try rebuild_budget=50000 first, 110000 only if 50k insufficient.',
-  ].join('\n'),
+  description: 'Rebuild dynamic history through the single runtime/context-history implementation. Explicit topic rebuild recalls digest history by keyword match and rewrites only P4 dynamic history.',
   inputSchema: {
     type: 'object',
     properties: {
-      session_id: { type: 'string', description: 'Optional session id override. Defaults to current tool context session.' },
-      agent_id: { type: 'string', description: 'Optional agent id override. Defaults to current tool context agent.' },
-      mode: { type: 'string', enum: ['minimal', 'moderate', 'aggressive'], description: 'Context build mode override for this rebuild.' },
-      target_budget: { type: 'number', description: 'Optional token budget override for this rebuild. Default is 20k when not configured otherwise.' },
-      rebuild_budget: { type: 'number', description: 'Preferred alias for rebuild token budget. Recommended ladder: 50k first for coding tasks, 110k only when 50k is insufficient.' },
-      budget_tokens: { type: 'number', description: 'Alias for rebuild token budget; same meaning as rebuild_budget/target_budget.' },
-      current_prompt: { type: 'string', description: 'Current user intent/topic used for relevance sorting.' },
-      include_messages: { type: 'boolean', description: 'Whether to include compact message previews in tool output.' },
-      message_limit: { type: 'number', description: 'Max preview messages when include_messages=true (default 40, max 120).' },
-      _runtime_context: { type: 'object', description: 'Optional runtime context bridge (session/agent/root_dir).' },
+      session_id: { type: 'string' },
+      agent_id: { type: 'string' },
+      mode: { type: 'string', enum: ['minimal', 'moderate', 'aggressive'] },
+      target_budget: { type: 'number' },
+      rebuild_budget: { type: 'number' },
+      budget_tokens: { type: 'number' },
+      current_prompt: { type: 'string' },
+      include_messages: { type: 'boolean' },
+      message_limit: { type: 'number' },
+      _runtime_context: { type: 'object' },
     },
     additionalProperties: true,
   },
   execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ContextBuilderRebuildOutput> => {
     const input = parseInput(rawInput);
     const sessionId = (input.session_id ?? context.sessionId ?? '').trim();
-    if (!sessionId) {
+    if (sessionId.length === 0) {
       throw new Error('context_builder.rebuild requires session_id (or active tool context sessionId)');
     }
 
-
-    // Rate limit: 5 minutes per session
     const lastRebuildTime = sessionRebuildTimestamps.get(sessionId) || 0;
     const elapsedSinceLastRebuild = Date.now() - lastRebuildTime;
     if (elapsedSinceLastRebuild < REBUILD_RATE_LIMIT_MS) {
-      log.warn('Rebuild rate limited', { sessionId, elapsedSeconds: Math.floor(elapsedSinceLastRebuild / 1000) });
       return {
         ok: false,
         action: 'skipped',
@@ -194,10 +155,8 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
         rateLimitSeconds: Math.floor((REBUILD_RATE_LIMIT_MS - elapsedSinceLastRebuild) / 1000),
       };
     }
-    // 检查是否已有 rebuild 锁
+
     if (hasSessionLock(sessionId)) {
-      log.warn('Rebuild already in progress, skipping', { sessionId });
-      sessionRebuildTimestamps.set(sessionId, Date.now());
       return {
         ok: false,
         action: 'skipped',
@@ -209,9 +168,6 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
       };
     }
 
-    // 获取 rebuild 锁
-    await acquireSessionLock(sessionId, 'rebuild');
-
     const agentId = (input.agent_id ?? context.agentId ?? 'finger-system-agent').trim();
     const settings = loadContextBuilderSettings();
     const contextWindow = getContextWindow();
@@ -222,74 +178,84 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
       : Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
         ? Math.floor(settings.historyBudgetTokens)
         : Math.floor(contextWindow * settings.budgetRatio);
-    const buildMode = input.mode ?? settings.mode;
-    const rootDir = resolveRootDir(input, agentId, context);
+    const rootDir = normalizeRootDirForAgent(resolveRootDir(input, agentId, context), agentId);
     const sessionMessages = parseRuntimeSessionMessages(input._runtime_context);
-
-    const built = await buildContext(
-      {
-        rootDir,
-        sessionId,
-        agentId,
-        mode: 'main',
-        currentPrompt: input.current_prompt,
-        ...(sessionMessages ? { sessionMessages } : {}),
-      },
-      {
-        targetBudget,
-        buildMode,
-        includeMemoryMd: false,
-        enableTaskGrouping: true,
-        rebuildTrigger: 'manual',
-        enableModelRanking: settings.enableModelRanking,
-        rankingProviderId: settings.rankingProviderId,
-      },
+    const prompt = resolvePrompt(input, sessionMessages);
+    const ledgerPath = resolveLedgerPath(rootDir, sessionId, agentId, 'main');
+    const rebuildResult = await forceRebuild(
+      sessionId,
+      ledgerPath,
+      'topic',
+      prompt,
+      tokenizeUserInput(prompt),
+      targetBudget,
+      sessionMessages,
     );
 
-    setContextBuilderOnDemandView({
-      sessionId,
-      agentId,
-      mode: 'main',
-      buildMode,
-      targetBudget,
-      selectedBlockIds: built.rankedTaskBlocks.map((block) => block.id),
-      metadata: built.metadata,
-      messages: built.messages,
-      createdAt: new Date().toISOString(),
-    });
+    if (rebuildResult.ok === false) {
+      return {
+        ok: false,
+        action: 'skipped',
+        reason: 'rebuild_failed',
+        sessionId,
+        agentId,
+        targetBudget,
+        selectedBlockIds: [],
+        metadata: {
+          ...rebuildResult.metadata,
+          ...(typeof rebuildResult.error === 'string' ? { error: rebuildResult.error } : {}),
+        },
+      };
+    }
 
+    sessionRebuildTimestamps.set(sessionId, Date.now());
     const includeMessages = input.include_messages === true;
     const messageLimit = Number.isFinite(input.message_limit)
       ? Math.max(1, Math.min(120, Math.floor(input.message_limit as number)))
       : 40;
+    const selectedBlockIds = rebuildResult.messages
+      .filter((message) => message.metadata?.compactDigest === true)
+      .map((message) => message.id);
 
-    try {
-      return {
-        ok: true,
-        action: 'rebuild',
-        sessionId,
-        agentId,
-        buildMode,
-        targetBudget,
-        metadata: built.metadata,
-        selectedBlockIds: built.rankedTaskBlocks.map((block) => block.id),
-        appliesNextTurn: true,
-        ...(includeMessages
-          ? {
-            messages: built.messages.slice(-messageLimit).map((message) => ({
+    log.info('Context builder rebuild completed', {
+      sessionId,
+      agentId,
+      targetBudget,
+      digestCount: rebuildResult.digestCount,
+      rawMessageCount: rebuildResult.rawMessageCount,
+      totalTokens: rebuildResult.totalTokens,
+    });
+
+    return {
+      ok: true,
+      action: 'rebuild',
+      sessionId,
+      agentId,
+      targetBudget,
+      buildMode: rebuildResult.mode,
+      metadata: {
+        ...rebuildResult.metadata,
+        rebuildMode: rebuildResult.mode,
+        digestCount: rebuildResult.digestCount,
+        rawMessageCount: rebuildResult.rawMessageCount,
+        totalTokens: rebuildResult.totalTokens,
+      },
+      selectedBlockIds,
+      appliesNextTurn: true,
+      ...(includeMessages
+        ? {
+            messages: rebuildResult.messages.slice(-messageLimit).map((message) => ({
               id: message.id,
               role: message.role,
-              tokenCount: message.tokenCount,
-              ...(message.contextZone ? { contextZone: message.contextZone } : {}),
-              contentPreview: message.content.length > 180 ? `${message.content.slice(0, 180)}...` : message.content,
+              tokenCount: typeof message.metadata?.tokenCount === 'number' ? Math.floor(message.metadata.tokenCount) : 0,
+              ...(typeof message.metadata?.contextZone === 'string'
+                ? { contextZone: message.metadata.contextZone as 'working_set' | 'historical_memory' }
+                : {}),
+              contentPreview: message.content.length > 180 ? message.content.slice(0, 180) + '...' : message.content,
             })),
           }
-          : {}),
-      };
-    } finally {
-      // 释放 rebuild 锁
-      releaseSessionLock(sessionId);
-      log.info('Rebuild lock released', { sessionId });
-    }
+        : {}),
+      __rebuiltMessages: rebuildResult.messages,
+    };
   },
 };

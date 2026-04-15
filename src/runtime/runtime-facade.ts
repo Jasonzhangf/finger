@@ -19,20 +19,6 @@ import {
   type ToolAuthorizationGrant,
 } from './tool-authorization.js';
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
-import {
-  TopicShiftDetector,
-  extractTopicShiftControl,
-  isHeartbeatSession,
-  isCronTask,
-} from './topic-shift-detector.js';
-import { executeContextRebuild, extractPromptFromPayload, estimateMessageTokens, compressCurrentHistory } from './context-rebuild-executor.js';
-import {
-  makeTriggerDecision,
-  executeContextHistoryManagement,
-  executeCompact,
-  executeRebuild,
-  type TriggerDecision,
-} from './context-history/index.js';
 import { createRustKernelCompactionError } from './kernel-owned-compaction.js';
 import { SessionControlPlaneStore } from './session-control-plane.js';
 import { SYSTEM_PROJECT_PATH } from '../agents/finger-system-agent/index.js';
@@ -103,10 +89,6 @@ const autoDigestStopStateBySession = new Map<string, { lastAttemptAt: number; la
 const autoDigestStopInFlightBySession = new Map<string, Promise<boolean>>();
 
 export class RuntimeFacade {
-  // Topic shift detector per session
-  private readonly topicShiftDetectors = new Map<string, TopicShiftDetector>();
-  // Last response metadata per session (for topic shift detection)
-  private readonly lastResponseMetadata = new Map<string, Record<string, unknown>>();
   private currentSessionId: string | null = null;
   private readonly agentSessionBindings = new Map<string, string>();
   private readonly sessionControlPlaneStore = new SessionControlPlaneStore();
@@ -241,11 +223,6 @@ export class RuntimeFacade {
    */
   deleteSession(sessionId: string): boolean {
     const result = this.sessionManager.deleteSession(sessionId);
-    if (result) {
-      // C1: 清理 TopicShiftDetector 和 lastResponseMetadata 避免内存泄漏
-      this.topicShiftDetectors.delete(sessionId);
-      this.lastResponseMetadata.delete(sessionId);
-    }
     if (result && this.currentSessionId === sessionId) {
       this.currentSessionId = null;
     }
@@ -532,7 +509,7 @@ export class RuntimeFacade {
         && input !== null
         && !Array.isArray(input)
       )
-        ? await(async () => {
+        ? await (async () => {
             const payload = { ...(input as Record<string, unknown>) };
             const runtimeContextRaw = (
               typeof payload._runtime_context === 'object'
@@ -541,229 +518,30 @@ export class RuntimeFacade {
             )
               ? (payload._runtime_context as Record<string, unknown>)
               : {};
-            
-            // === Context Rebuild Decision ===
-            // 唯一真源：Session.messages（内存）+ main.json（持久化）
-            // 消费者通过 contextHistoryProvider 读 Session.messages
-            // 不再使用 _runtime_context.session_messages 临时态
-            const ALWAYS_KEEP_RECENT_ROUNDS = 3;
-            runtimeContextRaw.working_set_mode = 'recent_raw';
-
-            const rebuildSession = this.sessionManager.getSession(sessionId);
-            const rebuildMessages = this.sessionManager.getMessages(sessionId, 0);
-            const currentTokens = rebuildMessages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
-            const maxTokens = 8000;
-            
-            // Get last response metadata for topic shift detection
-            const lastMeta = this.lastResponseMetadata.get(sessionId);
-            const control = extractTopicShiftControl(lastMeta);
-            
-            // Get or create TopicShiftDetector for this session
-            let detector = this.topicShiftDetectors.get(sessionId);
-            if (!detector) {
-              detector = new TopicShiftDetector();
-              this.topicShiftDetectors.set(sessionId, detector);
-            }
-            
-            // Determine source type from session context
-            const rebuildSessionContext = (rebuildSession?.context && typeof rebuildSession.context === 'object')
-              ? rebuildSession.context as Record<string, unknown>
-              : undefined;
-            const sourceType = (typeof rebuildSessionContext?.sourceType === 'string')
-              ? rebuildSessionContext.sourceType
-              : 'user';
-            
-           // Decide if context rebuild should be triggered
-            const prompt = extractPromptFromPayload(payload);
-            
-            // === 新的 Context History Management 逻辑 ===
-            // 1. 使用 makeTriggerDecision 判断触发类型
-            // 2. 使用 executeContextHistoryManagement 执行
-            
-            // 获取 currentHistory（最近的消息）
-            const currentHistoryMessages = this.sessionManager.getMessages(sessionId, 0);
-            
-          // 转换为 SessionMessage 格式
-            // 转换为 context-history 模块的 SessionMessage 格式
-            const sessionMessages: SessionMessage[] = currentHistoryMessages.map(msg => ({
-              id: msg.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-              role: msg.role,
-              content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-              timestamp: msg.timestamp || new Date().toISOString(),
-              metadata: msg.metadata as Record<string, unknown> | undefined,
+            const sessionMessages = this.sessionManager.getMessages(sessionId, 0).map((message) => ({
+              id: message.id,
+              role: message.role,
+              content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
+              timestamp: message.timestamp,
+              ...(message.metadata ? { metadata: message.metadata } : {}),
+              ...(message.attachments ? { attachments: message.attachments } : {}),
             }));
-            
-            // 判断触发决策
-            const historyDecision = makeTriggerDecision(sessionId, prompt || '', sessionMessages, { maxTokens });
-            
-            const decision = {
-              shouldRebuild: historyDecision.shouldAct && historyDecision.actionType !== 'compact',
-              reason: historyDecision.reason,
-              confidence: historyDecision.confidence || 0,
-              actionType: historyDecision.actionType,
-            };
-            
-            // === Determine if heartbeat/cron task ===
-            const isHeartbeatOrCron = isHeartbeatSession(sessionId) || sourceType === 'cron';
-            
-            // === 检查索引是否就绪 ===
-            // 索引未完成 → 不触发 rebuild，只使用 recentDigests
-            // 如果上下文超限触发 rebuild 但 index 未完成，返回特殊状态通知用户
-            let indexReady = true;
-            let indexWaitMs = 0;
-            try {
-              const fsPromises = await import('fs/promises');
-              const lPath = path.join(FINGER_PATHS.sessions.dir, sessionId, agentId, 'main', 'context-ledger.jsonl');
-              const ledgerStat = await fsPromises.stat(lPath).catch(() => null);
-              if (ledgerStat) {
-                // 如果 ledger 在最近 30 秒内被修改，认为索引可能未完成（留足时间）
-                const threeSecondsAgo = Date.now() - 3000;
-                if (ledgerStat.mtimeMs > threeSecondsAgo) {
-                  indexReady = false;
-                  indexWaitMs = Math.max(0, 3000 - (Date.now() - ledgerStat.mtimeMs));
-                  log.info('[RuntimeFacade] Ledger recently modified, index may not be ready', {
-                    sessionId,
-                    ledgerMtime: ledgerStat.mtimeMs,
-                    indexWaitMs,
-                  });
-                }
-              }
-            } catch (_e) {
-              // ignore stat errors
+            if (Array.isArray(runtimeContextRaw.session_messages) === false) {
+              runtimeContextRaw.session_messages = sessionMessages;
             }
-            
-           // 如果上下文超限触发 rebuild 但 index 未完成，通知用户等待
-            if ((decision.actionType === 'compact' || decision.actionType === 'mixed') && !indexReady) {
-             runtimeContextRaw.rebuild_status = 'waiting_for_index';
-             runtimeContextRaw.rebuild_wait_ms = indexWaitMs;
-              log.warn('[RuntimeFacade] Context overflow/mixed but index not ready, user should wait', {
-               sessionId,
-               currentTokens,
-               maxTokens,
-               indexWaitMs,
-             });
-            }
-            
-            // === 压缩场景：超限压缩（不依赖索引） ===
-            if (decision.actionType === 'compact' || (decision.actionType === 'mixed' && !indexReady)) {
-              log.info('[RuntimeFacade] Context compact triggered', {
-                sessionId,
-                agentId,
-                reason: decision.reason,
-                currentTokens,
-                maxTokens,
-              });
-              
-              try {
-                const ledgerPath = path.join(FINGER_PATHS.sessions.dir, sessionId, agentId, 'main', 'context-ledger.jsonl');
-                const { decision: rebuildDecision, result: rebuildResult } = await executeRebuild(
-                  sessionId,
-                  ledgerPath,
-                  sessionMessages,
-                  prompt || '',
-                  undefined, // currentTopic
-                  undefined, // topicShiftConfidence
-                );
-                
-                if (rebuildResult && rebuildResult.ok) {
-                  log.info('[RuntimeFacade] Context compact completed', {
-                    sessionId,
-                    trigger: rebuildDecision.trigger,
-                    mode: rebuildDecision.mode,
-                    digestCount: rebuildResult.digestCount,
-                    totalTokens: rebuildResult.totalTokens,
-                  });
-                  // 唯一真源：更新 Session.messages + 持久化 main.json
-                  const replaced = this.sessionManager.replaceMessages(sessionId, rebuildResult.messages);
-                  if (!replaced) {
-                    log.warn('[RuntimeFacade] replaceMessages failed, session may not exist', { sessionId });
-                  }
-                  // 发送 session_topic_shift 事件（用于清除旧 digest）
-                  void this.eventBus.emit({
-                    type: 'session_topic_shift',
-                    sessionId,
-                    timestamp: new Date().toISOString(),
-                    payload: {
-                      trigger: rebuildDecision.trigger as 'topic_shift' | 'new_session' | 'overflow' | 'heartbeat',
-                      confidence: 1,
-                      digestCount: rebuildResult.digestCount,
-                      totalTokens: rebuildResult.totalTokens,
-                    },
-                  });
-                  
-                  // 删除临时态 session_messages，不再使用
-                  runtimeContextRaw.working_set_mode = 'recent_after_compact';
-                  runtimeContextRaw.compact_status = 'ok';
-                  runtimeContextRaw.compact_digests = rebuildResult.digestCount;
-               } else if (rebuildResult) {
-                  log.error('[RuntimeFacade] Context rebuild failed', new Error(rebuildResult.error || 'unknown'), { sessionId });
-                  runtimeContextRaw.compact_status = 'failed';
-                  runtimeContextRaw.compact_error = rebuildResult.error;
-                } else {
-                  log.warn('[RuntimeFacade] No rebuild result', { sessionId, decision: rebuildDecision });
-                }
-              } catch (compactErr) {
-                log.error('[RuntimeFacade] Context compact exception', compactErr as Error, { sessionId });
-                runtimeContextRaw.compact_status = 'exception';
-              }
-              
-              // compact-only 场景直接返回
-              if (decision.actionType === 'compact' && !decision.shouldRebuild) {
-                // 已完成压缩，不需要 rebuild
-              }
-            }
-            
-            // Execute context rebuild if decision is positive AND index is ready
-            if (decision.shouldRebuild && indexReady && decision.actionType !== 'compact') {
-              log.info('[RuntimeFacade] Context rebuild triggered', {
-                sessionId,
-                agentId,
-                reason: decision.reason,
-                confidence: decision.confidence,
-                isHeartbeatOrCron,
-                indexReady,
-              });
-              
-              // Rebuild 时压缩最近 3 轮为轻量 digest
-              const rawMessages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
-              // rebuild 时不设置 session_messages，唯一真源是 Session.messages
-              
-              const rebuildResult = await executeContextRebuild(
-                sessionId,
-                agentId,
-                prompt || 'system heartbeat task',
-                {
-                  mode: 'embed',
-                  topK: isHeartbeatSession(sessionId) ? 15 : 12,
-                  excludeSystemPrompt: isHeartbeatSession(sessionId),
-                  maxTokens: isHeartbeatSession(sessionId) ? 4000 : maxTokens,
-                },
-              );
-              
-              if (rebuildResult.ok && rebuildResult.rankedBlocks.length > 0) {
-                runtimeContextRaw.rebuild_blocks = rebuildResult.rankedBlocks;
-                runtimeContextRaw.rebuild_tokens = rebuildResult.tokensUsed;
-                runtimeContextRaw.rebuild_latency_ms = rebuildResult.latencyMs;
-                runtimeContextRaw.rebuild_status = 'ok';
-              } else {
-                // C2 Fallback: rebuild 失败时降级到 session messages
-                log.warn('[RuntimeFacade] Context rebuild failed or empty, falling back', {
-                  sessionId,
-                  ok: rebuildResult.ok,
-                  blocksCount: rebuildResult.rankedBlocks.length,
-                  error: rebuildResult.error,
-                });
-                runtimeContextRaw.rebuild_blocks = [];
-                runtimeContextRaw.rebuild_status = 'failed_fallback';
-              }
-            }
-            
-            // session_messages 已删除，唯一真源是 Session.messages
             if (typeof runtimeContextRaw.session_id !== 'string' || runtimeContextRaw.session_id.trim().length === 0) {
               runtimeContextRaw.session_id = sessionId;
             }
             if (typeof runtimeContextRaw.agent_id !== 'string' || runtimeContextRaw.agent_id.trim().length === 0) {
               runtimeContextRaw.agent_id = agentId;
+            }
+            if (typeof runtimeContextRaw.root_dir !== 'string' || runtimeContextRaw.root_dir.trim().length === 0) {
+              const ledgerRoot = typeof this.sessionManager.resolveLedgerRootForSession === 'function'
+                ? this.sessionManager.resolveLedgerRootForSession(sessionId)
+                : null;
+              if (typeof ledgerRoot === 'string' && ledgerRoot.trim().length > 0) {
+                runtimeContextRaw.root_dir = ledgerRoot;
+              }
             }
             payload._runtime_context = runtimeContextRaw;
             return payload;
@@ -779,7 +557,7 @@ export class RuntimeFacade {
         ? sessionContext.channelId
         : undefined;
 
-      const result = await this.toolRegistry.execute(resolvedToolName, executionInput, {
+      let result = await this.toolRegistry.execute(resolvedToolName, executionInput, {
         agentId,
         sessionId,
         ...(typeof contextProjectPath === 'string' && contextProjectPath.trim().length > 0
@@ -809,6 +587,32 @@ export class RuntimeFacade {
         timestamp: new Date().toISOString(),
         payload: { input: executionInput, output: result, duration, ...(traceId ? { traceId } : {}) },
       });
+
+      if (
+        resolvedToolName === 'context_builder.rebuild'
+        && isRecord(result)
+        && Array.isArray(result.__rebuiltMessages)
+      ) {
+        const rebuiltMessages = result.__rebuiltMessages
+          .filter((item): item is SessionMessage => isRecord(item) && typeof item.id === 'string' && typeof item.role === 'string' && typeof item.content === 'string' && typeof item.timestamp === 'string')
+          .map((item) => ({
+            id: item.id,
+            role: item.role as SessionMessage['role'],
+            content: item.content,
+            timestamp: item.timestamp,
+            ...(isRecord(item.metadata) ? { metadata: item.metadata } : {}),
+            ...(Array.isArray(item.attachments) ? { attachments: item.attachments as Attachment[] } : {}),
+          }));
+        if (rebuiltMessages.length > 0) {
+          const replaced = this.sessionManager.replaceMessages(sessionId, rebuiltMessages);
+          if (!replaced) {
+            log.warn('[RuntimeFacade] Failed to apply rebuilt session messages', { sessionId, toolName: resolvedToolName });
+          }
+        }
+        const sanitized = { ...result };
+        delete sanitized.__rebuiltMessages;
+        result = sanitized;
+      }
 
       if (resolvedToolName === 'view_image') {
         await this.appendViewImageAttachmentEvent(sessionId, result);

@@ -1,31 +1,7 @@
-/**
- * Context History Utils - 共享工具函数
- */
-
 import type { SessionMessage } from '../../orchestration/session-types.js';
-import type { TaskDigest } from './types.js';
+import type { SearchResult, TaskDigest } from './types.js';
 import { estimateTokens } from '../../utils/token-counter.js';
-import { logger } from '../../core/logger.js';
 
-const log = logger.module('ContextHistoryUtils');
-
-/**
- * Tokenize 用户输入（直接分词，无需 LLM）
- */
-export function tokenizeUserInput(input: string): string[] {
-  // 简单分词：按空格、标点分割
-  const tokens = input
-    .toLowerCase()
-    .split(/[\s,，。！？、；：""''（）【】《》\n\r\t]+/)
-    .filter(t => t.length >= 2) // 过滤太短的词
-    .filter(t => !isStopWord(t)); // 过滤停用词
-  
-  return tokens;
-}
-
-/**
- * 停用词列表
- */
 const STOP_WORDS = new Set([
   '的', '了', '是', '在', '有', '和', '与', '或', '这', '那', '我', '你', '他', '她',
   '它', '们', '什么', '怎么', '为什么', '哪里', '谁', '哪个', '多少', '几',
@@ -40,160 +16,121 @@ const STOP_WORDS = new Set([
   'up', 'down', 'out', 'over', 'under', 'again', 'further', 'then',
   'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each',
   'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not',
-  'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'and',
-  'but', 'if', 'or', 'because', 'as', 'until', 'while', 'of', 'at',
+  'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or', 'because', 'as', 'until', 'while',
 ]);
 
-function isStopWord(word: string): boolean {
-  return STOP_WORDS.has(word);
+export function tokenizeUserInput(input: string): string[] {
+  return Array.from(new Set(
+    input
+      .toLowerCase()
+      .split(/[\s,，。！？、；："''（）【】《》\n\r\t/\\]+/)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 2)
+      .filter((item) => !STOP_WORDS.has(item)),
+  ));
 }
 
-/**
- * 计算 digest token 数
- */
 export function estimateDigestTokens(digest: TaskDigest): number {
   const text = [
     digest.request,
     digest.summary,
     digest.topic,
     ...digest.tags,
+    ...(digest.key_entities ?? []),
     ...digest.key_tools,
     ...digest.key_reads,
     ...digest.key_writes,
-  ].join(' ');
-  return estimateTokens(text);
-}
-
-/**
- * 计算消息 token 数
- */
-export function estimateMessageTokens(message: SessionMessage): number {
-  const content = typeof message.content === 'string' 
-    ? message.content 
-    : JSON.stringify(message.content);
-  return estimateTokens(content);
-}
-
-/**
- * 预算框选（按相关性从高到低累加）
- */
-export function budgetSelectByRelevance(
-  results: { digest: TaskDigest; relevance: number }[],
-  budgetTokens: number
-): { digest: TaskDigest; relevance: number }[] {
-  const selected: { digest: TaskDigest; relevance: number }[] = [];
-  let totalTokens = 0;
-  
-  // 按相关性排序（已排序）
-  for (const result of results) {
-    const digestTokens = estimateDigestTokens(result.digest);
-    if (totalTokens + digestTokens <= budgetTokens) {
-      selected.push(result);
-      totalTokens += digestTokens;
-    } else {
-      // 超预算，停止
-      break;
-    }
-  }
-  
-  log.debug('Budget select by relevance', {
-    inputCount: results.length,
-    outputCount: selected.length,
-    totalTokens,
-    budgetTokens,
-  });
-  
-  return selected;
-}
-
-/**
- * 预算框选（按时间从新到旧累加）
- */
-export function budgetSelectByTime(
-  digests: TaskDigest[],
-  budgetTokens: number
-): TaskDigest[] {
-  // 按时间排序（最新优先）
-  const sorted = [...digests].sort((a, b) => 
-    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-  );
-  
-  const selected: TaskDigest[] = [];
-  let totalTokens = 0;
-  
-  for (const digest of sorted) {
-    const digestTokens = estimateDigestTokens(digest);
-    if (totalTokens + digestTokens <= budgetTokens) {
-      selected.push(digest);
-      totalTokens += digestTokens;
-    } else {
-      break;
-    }
-  }
-  
-  log.debug('Budget select by time', {
-    inputCount: digests.length,
-    outputCount: selected.length,
-    totalTokens,
-    budgetTokens,
-  });
-  
-  return selected;
-}
-
-/**
- * 按时间排序（从早到晚）
- */
-export function sortByTimeAscending(digests: TaskDigest[]): TaskDigest[] {
-  return [...digests].sort((a, b) => 
-    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-  );
-}
-
-/**
- * 按相关性排序（从高到低）
- */
-export function sortByRelevanceDescending(
-  results: { digest: TaskDigest; relevance: number }[]
-): { digest: TaskDigest; relevance: number }[] {
-  return [...results].sort((a, b) => b.relevance - a.relevance);
-}
-
-/**
- * 过滤低相关性结果
- */
-export function filterByRelevanceThreshold(
-  results: { digest: TaskDigest; relevance: number }[],
-  threshold: number
-): { digest: TaskDigest; relevance: number }[] {
-  return results.filter(r => r.relevance >= threshold);
-}
-
-/**
- * 取 top N%
- */
-export function takeTopPercent(
-  results: { digest: TaskDigest; relevance: number }[],
-  percent: number
-): { digest: TaskDigest; relevance: number }[] {
-  const count = Math.ceil(results.length * percent);
-  return results.slice(0, count);
-}
-
-/**
- * 将 digest 转换为 SessionMessage
- */
-export function digestToSessionMessage(digest: TaskDigest): SessionMessage {
-  const content = [
-    `[Digest] Request: ${digest.request}`,
-    `Summary: ${digest.summary}`,
-    `Topic: ${digest.topic}`,
-    `Tags: ${digest.tags.join(', ')}`,
-    `Key Tools: ${digest.key_tools.join(', ')}`,
   ].join('\n');
-  
+  return Math.max(1, estimateTokens(text));
+}
+
+export function estimateMessageTokens(message: Pick<SessionMessage, 'content'>): number {
+  return Math.max(1, estimateTokens(typeof message.content === 'string' ? message.content : JSON.stringify(message.content)));
+}
+
+export function cloneSessionMessages(messages: SessionMessage[]): SessionMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    ...(message.attachments ? { attachments: [...message.attachments] } : {}),
+    ...(message.metadata ? { metadata: { ...message.metadata } } : {}),
+  }));
+}
+
+export function summarizeText(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+export function groupMessagesIntoTurns(messages: SessionMessage[]): SessionMessage[][] {
+  const normalized = cloneSessionMessages(messages).filter((message) => {
+    const content = typeof message.content === 'string' ? message.content.trim() : '';
+    if (!content) return false;
+    return message.metadata?.compactDigest !== true;
+  });
+  if (normalized.length === 0) return [];
+
+  const groups: SessionMessage[][] = [];
+  let current: SessionMessage[] = [];
+  for (const message of normalized) {
+    if (message.role === 'user' && current.length > 0) {
+      groups.push(current);
+      current = [message];
+      continue;
+    }
+    current.push(message);
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+export function buildDigestFromMessageGroup(group: SessionMessage[]): TaskDigest {
+  const firstUser = group.find((item) => item.role === 'user');
+  const lastAssistant = [...group].reverse().find((item) => item.role === 'assistant');
+  const combinedText = group.map((item) => item.content).join('\n');
+  const toolNames = Array.from(new Set(
+    group
+      .map((item) => typeof item.toolName === 'string' ? item.toolName.trim() : '')
+      .filter((item) => item.length > 0),
+  )).slice(0, 8);
+  const keyEntities = tokenizeUserInput(combinedText).slice(0, 12);
+  const topic = keyEntities.slice(0, 4).join(' ') || summarizeText(firstUser?.content ?? group[0]?.content ?? 'history digest', 80);
+  const digest: TaskDigest = {
+    request: summarizeText(firstUser?.content ?? group[0]?.content ?? '(no user request)', 220),
+    summary: summarizeText(lastAssistant?.content ?? group[group.length - 1]?.content ?? '(no assistant summary)', 320),
+    key_tools: toolNames,
+    key_reads: [],
+    key_writes: [],
+    tags: keyEntities.slice(0, 6),
+    topic,
+    tokenCount: 0,
+    timestamp: group[group.length - 1]?.timestamp ?? new Date().toISOString(),
+    key_entities: keyEntities,
+    source: 'session_snapshot',
+  };
+  digest.tokenCount = estimateDigestTokens(digest);
+  return digest;
+}
+
+export function buildDigestsFromMessages(messages: SessionMessage[]): TaskDigest[] {
+  return groupMessagesIntoTurns(messages).map((group) => buildDigestFromMessageGroup(group));
+}
+
+export function digestToSessionMessage(
+  digest: TaskDigest,
+  metadata: Record<string, unknown> = {},
+): SessionMessage {
+  const content = [
+    `[context_digest] ${digest.topic || 'historical_memory'}`,
+    `Request: ${digest.request}`,
+    `Summary: ${digest.summary}`,
+    digest.tags.length > 0 ? `Tags: ${digest.tags.join(', ')}` : '',
+    digest.key_tools.length > 0 ? `Tools: ${digest.key_tools.join(', ')}` : '',
+    (digest.key_entities ?? []).length > 0 ? `Entities: ${(digest.key_entities ?? []).join(', ')}` : '',
+  ].filter(Boolean).join('\n');
+
   return {
-    id: `digest-${digest.timestamp}`,
+    id: `digest-${digest.ledgerLine ?? 'session'}-${Buffer.from(`${digest.timestamp}:${digest.topic}`).toString('base64').replace(/=/g, '')}`,
     role: 'assistant',
     content,
     timestamp: digest.timestamp,
@@ -202,52 +139,127 @@ export function digestToSessionMessage(digest: TaskDigest): SessionMessage {
       tokenCount: digest.tokenCount,
       tags: digest.tags,
       topic: digest.topic,
-      ledgerLine: digest.ledgerLine,
+      ...(digest.ledgerLine !== undefined ? { ledgerLine: digest.ledgerLine } : {}),
+      ...(digest.key_entities ? { keyEntities: digest.key_entities } : {}),
+      ...metadata,
     },
   };
 }
 
-/**
- * 二次校验 token 预算
- */
-export function validateTokenBudget(
-  messages: SessionMessage[],
-  budgetTokens: number
-): { ok: boolean; actualTokens: number; overflow: number } {
-  const actualTokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
-  const overflow = actualTokens - budgetTokens;
-  
+export function sessionDigestMessageToTaskDigest(message: SessionMessage): TaskDigest | null {
+  if (message.metadata?.compactDigest !== true) return null;
+  const content = typeof message.content === 'string' ? message.content : '';
+  const lines = content.split('\n').map((line) => line.trim());
+  const takeField = (prefix: string): string => {
+    const hit = lines.find((line) => line.toLowerCase().startsWith(prefix.toLowerCase()));
+    return hit ? hit.slice(prefix.length).trim() : '';
+  };
+  const tags = takeField('Tags:').split(',').map((item) => item.trim()).filter(Boolean);
+  const keyTools = takeField('Tools:').split(',').map((item) => item.trim()).filter(Boolean);
+  const keyEntities = takeField('Entities:').split(',').map((item) => item.trim()).filter(Boolean);
+  const topicLine = lines.find((line) => line.startsWith('[context_digest]')) ?? '';
+  const topic = topicLine.replace('[context_digest]', '').trim() || takeField('Topic:');
   return {
-    ok: overflow <= 0,
-    actualTokens,
-    overflow: Math.max(0, overflow),
+    request: takeField('Request:') || summarizeText(content, 220),
+    summary: takeField('Summary:') || summarizeText(content, 320),
+    key_tools: keyTools,
+    key_reads: [],
+    key_writes: [],
+    tags,
+    topic,
+    tokenCount: typeof message.metadata?.tokenCount === 'number' ? Math.max(1, Math.floor(message.metadata.tokenCount)) : estimateTokens(content),
+    timestamp: message.timestamp,
+    ledgerLine: typeof message.metadata?.ledgerLine === 'number' ? Math.floor(message.metadata.ledgerLine) : undefined,
+    key_entities: keyEntities,
+    source: 'session_digest_message',
   };
 }
 
-/**
- * 获取最近 N 轮消息
- */
-export function getRecentRounds(
-  ledgerMessages: SessionMessage[],
-  rounds: number
-): SessionMessage[] {
-  // 识别轮次边界：user 消息作为一轮的开始
-  const userMessages = ledgerMessages.filter(m => m.role === 'user');
-  const recentUserCount = Math.min(rounds, userMessages.length);
-  
-  if (recentUserCount === 0) {
-    return [];
+export function selectTailMessagesWithinBudget(
+  messages: SessionMessage[],
+  budgetTokens: number,
+): { messages: SessionMessage[]; startIndex: number; totalTokens: number } {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { messages: [], startIndex: 0, totalTokens: 0 };
   }
-  
-  // 找到倒数第 N 个 user 消息的位置
-  const recentUserMessages = userMessages.slice(-recentUserCount);
-  const startUserId = recentUserMessages[0].id;
-  
-  // 从该位置开始截取
-  const startIndex = ledgerMessages.findIndex(m => m.id === startUserId);
-  if (startIndex === -1) {
-    return ledgerMessages.slice(-rounds * 2); // fallback
+  const selected: SessionMessage[] = [];
+  let totalTokens = 0;
+  let startIndex = messages.length;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const tokenCount = estimateMessageTokens(message);
+    if (selected.length > 0 && totalTokens + tokenCount > budgetTokens) break;
+    selected.unshift({
+      ...message,
+      ...(message.metadata ? { metadata: { ...message.metadata } } : {}),
+    });
+    totalTokens += tokenCount;
+    startIndex = index;
   }
-  
-  return ledgerMessages.slice(startIndex);
+  return { messages: selected, startIndex, totalTokens };
+}
+
+export function selectNewestDigestsWithinBudget(digests: TaskDigest[], budgetTokens: number): TaskDigest[] {
+  const sorted = [...digests].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  const selected: TaskDigest[] = [];
+  let totalTokens = 0;
+  for (const digest of sorted) {
+    const tokenCount = Math.max(1, digest.tokenCount || estimateDigestTokens(digest));
+    if (selected.length > 0 && totalTokens + tokenCount > budgetTokens) break;
+    selected.push({ ...digest, tokenCount });
+    totalTokens += tokenCount;
+  }
+  return sortByTimeAscending(selected);
+}
+
+export function sortByTimeAscending<T extends { timestamp: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+}
+
+export function sortByRelevanceDescending(results: SearchResult[]): SearchResult[] {
+  return [...results].sort((a, b) => {
+    if (b.relevance !== a.relevance) return b.relevance - a.relevance;
+    return new Date(b.digest.timestamp).getTime() - new Date(a.digest.timestamp).getTime();
+  });
+}
+
+export function filterByRelevanceThreshold(results: SearchResult[], threshold: number): SearchResult[] {
+  return results.filter((item) => item.relevance >= threshold);
+}
+
+export function takeTopPercent(results: SearchResult[], percent: number): SearchResult[] {
+  if (results.length === 0) return [];
+  const count = Math.max(1, Math.ceil(results.length * percent));
+  return results.slice(0, count);
+}
+
+export function validateTokenBudget(
+  messages: SessionMessage[],
+  budgetTokens: number,
+): { ok: boolean; actualTokens: number; overflow: number } {
+  const actualTokens = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+  const overflow = Math.max(0, actualTokens - budgetTokens);
+  return {
+    ok: overflow === 0,
+    actualTokens,
+    overflow,
+  };
+}
+
+export function getRecentRounds(messages: SessionMessage[], rounds: number): SessionMessage[] {
+  if (!Array.isArray(messages) || messages.length === 0 || rounds <= 0) return [];
+  const groups = groupMessagesIntoTurns(messages);
+  return groups.slice(-rounds).flat();
+}
+
+export function dedupeDigestsBySignature(digests: TaskDigest[]): TaskDigest[] {
+  const seen = new Set<string>();
+  const output: TaskDigest[] = [];
+  for (const digest of sortByTimeAscending(digests)) {
+    const signature = [digest.request, digest.summary, digest.topic, digest.timestamp].join('||');
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    output.push({ ...digest, tokenCount: Math.max(1, digest.tokenCount || estimateDigestTokens(digest)) });
+  }
+  return output;
 }

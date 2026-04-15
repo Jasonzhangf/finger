@@ -1,325 +1,76 @@
-# Context Builder 动态上下文构建设计
+# Context Builder 设计（收敛版）
 
-> Last updated: 2026-03-28 23:58 +08:00  
-> Status: Active  
-> Owner: Jason
->
-> 配套架构文档：
-> - `docs/design/ledger-only-dynamic-session-views.md`
+> Last updated: 2026-04-15
+> Status: Active / Simplified
 
-## 1. 目标
+## 1. 当前定位
 
-Context Builder 负责动态重建模型可见上下文中的 **history 区**，并显式区分：
-- **Working Set / 本轮推理区**
-- **Historical Memory Zone / 历史记忆区**
+`context_builder.rebuild` 现在不是一套独立的 context builder pipeline。
 
-它不改其他固定注入段：
-- skills
-- mailbox
-- 系统/开发者提示词
-- AGENTS 路由、HEARTBEAT 等
+它的唯一职责是：
+- 作为**显式 topic rebuild 工具入口**
+- 调用 `src/runtime/context-history/*`
+- 把 rebuild 结果回写到 `Session.messages`
 
-即：**history-only**。
+换句话说：
+**tool 是入口，不是实现。**
 
 ---
 
-## 1.2 Runtime Context Layout（ASCII）
+## 2. 唯一执行链
 
 ```text
-+----------------------------------------------------------------------------------+
-| P0 core_instructions                                                            |
-|    - system/developer/global hard rules                                         |
-+----------------------------------------------------------------------------------+
-| P1 runtime_capabilities                                                         |
-|    - skills / mailbox / FLOW / tool contracts                                   |
-+----------------------------------------------------------------------------------+
-| P2 current_turn                                                                  |
-|    - current user input + attachments                                            |
-+----------------------------------------------------------------------------------+
-| P3 continuity_anchors                                                            |
-|    - recent tasks + recent user turns (continuity pins)                         |
-+----------------------------------------------------------------------------------+
-| P4 dynamic_history   <-- only this zone is rebuilt/reordered/compressed         |
-|    +------------------------------------+-------------------------------------+  |
-|    | historical_memory                  | working_set                         |  |
-|    | - compact task digest preferred    | - current task full chain          |  |
-|    | - from compact-memory replacement  | - always kept at tail              |  |
-|    +------------------------------------+-------------------------------------+  |
-+----------------------------------------------------------------------------------+
-| P5 canonical_storage (not directly injected as full text)                       |
-|    - context-ledger.jsonl (raw truth)                                           |
-|    - compact-memory.jsonl (digest/summary truth)                                |
-+----------------------------------------------------------------------------------+
+model/tool call
+  -> context_builder.rebuild
+  -> forceRebuild(sessionId, ledgerPath, 'topic', ...)
+  -> runtime/context-history/rebuild.ts
+  -> __rebuiltMessages
+  -> runtime-facade
+  -> sessionManager.replaceMessages()
+  -> 下一轮直接消费 Session.messages
 ```
 
 ---
 
-## 1.3 压缩与重建流程（ASCII）
+## 3. 与自动 overflow 的关系
 
-```text
-[Turn execution]
-   |
-   +--> session.messages (runtime snapshot grows continuously)
-   +--> context-ledger.jsonl (append-only raw)
-   |
-   +--> context usage >= threshold (85%)
-          |
-          +--> compressContext()
-                 |
-                 +--> sessionManager.compressContext()    (pointer advance)
-                 +--> build replacement_history digests   (task-level compact)
-                 +--> context_ledger.memory(action=compact, replacement_history=...)
-                        -> compact-memory.jsonl
+显式 tool rebuild 与自动 overflow rebuild 的差别只在 **mode**：
+- `overflow`：超限自动触发
+- `topic`：显式召回触发
 
-[Later context rebuild / bootstrap/on-demand]
-   |
-   +--> buildContext(session snapshot)
-          |
-          +--> if compact replacement_history exists:
-                  historical_memory := compact digests
-                  working_set := latest live task
-              else:
-                  historical_memory := raw task blocks
-                  working_set := latest live task
-```
+二者共享：
+- 同一决策/执行框架
+- 同一 Session snapshot 覆盖点
+- 同一 digest 数据模型
 
 ---
 
-## 1.4 Ranking Provider 不可用时的降级策略（新增）
+## 4. 当前运行时约束
 
-当 `enableModelRanking=active` 且排序模型不可用（例如 `provider_not_found/http_xxx/exception/parse_failed`）时：
-
-1. 不中断本轮；
-2. 将 `historical_memory` 转为 task digest blocks（请求 + 结果 + 关键工具）；
-3. `working_set` 保持当前任务完整链路；
-4. metadata 记录 `rankingReason=digest_fallback:<reason>`，便于进度与排障可见。
-
-> 该策略确保 context builder 专用大模型不可用时，系统仍可继续推理而不丢关键上下文。
+1. 不再由 `buildContext()` 决定 runtime history
+2. 不再维护 bootstrap / indexed / on-demand 三套拼装结果
+3. `finger-role-modules` 只读取 `Session.messages`
+4. tool 返回的历史必须通过 `replaceMessages()` 成为下一轮唯一可见历史
 
 ---
 
-## 1.5 Bootstrap once gate 持久化与限流（2026-04-02）
+## 5. 结果形态
 
-为避免 daemon 重启后反复触发首次 bootstrap（抖动），`history_empty` 场景新增持久化 once gate：
+### topic rebuild
+- 输出：相关 digest 历史
+- zone：`historical_memory`
+- 排序：先 relevance 选，再按时间升序落回 session
 
-1. 状态落盘到 session context：`contextBuilderBootstrapOnceState`。
-2. 维度：`byAgent[agentId]`，记录：
-   - `lastAttemptAt`
-   - `lastOutcome`（`started|success|failed|no_historical`）
-   - `lastTrigger`
-   - `messageCountAtAttempt`
-3. 判定规则（仅 `history_empty` 生效）：
-   - 上次 `success`：本 session 不再自动 bootstrap once。
-   - 上次失败但有新消息：允许立即重试。
-   - 上次失败且无新消息：进入 cooldown（默认 120s，可由 `FINGER_BOOTSTRAP_ONCE_RETRY_COOLDOWN_MS` 覆盖）。
-
-`history_context_zero` 仍保持强制重建策略，不受 once gate 限制。
+### overflow rebuild
+- 输出：历史 digest + 最近原文 working set
+- zone：`historical_memory` + `working_set`
 
 ---
 
-## 1.6 Session 生命周期：禁止全局 cwd 切换（2026-04-02）
+## 6. 禁止事项
 
-`SessionManager.setCurrentSession()` 不再调用 `process.chdir()`。
-
-原因：
-- `process.cwd` 是进程级共享状态，在并发路由下会引入 session 串扰风险。
-- Session 切换应只更新 session state，不得影响其他并发请求。
-
-执行路径要求：
-- 工具执行必须显式携带 `cwd/projectPath`（来自 session/workspace），禁止依赖全局 cwd 作为真源。
-
----
-
-## 1.1 不可破坏约束（硬规则）
-
-### 最小历史单位 = 一个完整 task
-
-Context Builder 只能在 **task block** 级别做选择/排序/预算截断，不能在 task 内做裁剪。
-
-一个 task 的边界定义为：
-- 从一条用户请求（`role=user`）开始
-- 包含该轮中间的全部执行轨迹（assistant/tool_call/tool_result/tool_error/reasoning 等）
-- 直到该轮完成（`finish_reason=stop`，或进入下一条用户请求前的完整链路）
-
-### 禁止 task 内编辑
-
-对已选中的 task block：
-- 不允许删除 task 内部消息
-- 不允许改写 task 内部顺序
-- 不允许只保留 task 的“摘要片段”替代原始链路
-
-可做的仅有：
-- 选择哪些 task block 进入 history
-- 调整 task block 之间顺序（按 mode/ranking）
-- 在超预算时整块丢弃某些 task block（绝不拆块）
-
-> 备注：附件可使用占位摘要（`attachments: {count, summary}`）以控制输入体积，但不改变 task 内事件链路语义。
-
----
-
-## 2. 三种模式（mode）
-
-配置字段：`contextBuilder.mode`
-
-### 2.1 minimal（最轻模式）
-- 仅移除无关 task
-- 不从历史补充 task
-- 当前 task（Working Set）始终保留在尾部，不参与历史竞争
-
-示意：
-- 原始: `[task1] [task2(无关)] [task3] [task4(当前)]`
-- 结果: `[task1] [task3] [task4(当前)]`
-
-### 2.2 moderate（中等模式）
-- 先移除无关 task（按 task 最小颗粒）
-- 再从历史按相关性补充 task
-- **关键规则**：
-  - 如果单个补充 task 超过“移除量”，但总 tokens 仍在上下文预算内，仍允许补充
-- 当前 task（Working Set）始终保留在尾部
-
-流程：
-1. 识别并移除无关 task，记录 `removedTokens`
-2. 对历史候选按相关性排序
-3. 逐个补充：
-   - 优先在“移除额度”内补充
-   - 若超出移除额度但仍不超总预算，也允许补充
-4. 直到预算耗尽或无候选
-
-### 2.3 aggressive（激进模式）
-- 完全按相关性重排历史 task
-- 当前 task（Working Set）固定尾部
-- 最大化相关性
-
-示意：
-- 原始: `[task1] [task2] [task3] [task4(当前)]`
-- 相关性排序: `task3 > task1 > task2`
-- 结果: `[task3] [task1] [task2] [task4(当前)]`
-
----
-
-## 3. 排序（ranking）与 dryrun
-
-字段：`contextBuilder.enableModelRanking`
-- `false`: 不调用排序模型
-- `true` (active): 调排序模型并应用重排
-- `'dryrun'`: 调排序模型但**不改顺序**，只输出可观测结果
-
-`rankingProviderId` 关联 `user-settings.json.aiProviders`，不硬编码模型。
-
----
-
-## 3.1 上下文显式分区
-
-### Working Set（本轮推理区）
-- 当前 task block
-- 当前用户输入及其直接相关的本轮消息
-- 不参与历史 recall 竞争
-- 必须稳定保留在上下文尾部
-
-### Historical Memory Zone（历史记忆区）
-- 所有非当前 task 的历史候选
-- 可经过 embedding recall / model ranking / budget truncation
-- 是预算受限区
-
-### 观测要求
-构建结果 metadata 必须暴露：
-- `workingSetTaskBlockCount`
-- `historicalTaskBlockCount`
-- `workingSetMessageCount`
-- `historicalMessageCount`
-- `workingSetTokens`
-- `historicalTokens`
-
-每条 context message 也应标记所属分区：
-- `contextZone = working_set | historical_memory`
-
----
-
-## 4. 关键配置
-
-文件：`~/.finger/config/user-settings.json`
-
-```json
-{
-  "contextBuilder": {
-    "enabled": true,
-    "mode": "minimal | moderate | aggressive",
-    "historyBudgetTokens": 20000,
-    "budgetRatio": 0.85,
-    "halfLifeMs": 86400000,
-    "overThresholdRelevance": 0.5,
-    "enableModelRanking": false,
-    "rankingProviderId": "tcm",
-    "includeMemoryMd": false
-  }
-}
-```
-
-说明：
-- 历史重建预算以 `historyBudgetTokens` 为准，按 task 粒度累计，不按消息条数截断。
-- 预算控制必须在 task block 边界生效，不允许对 task 内消息做 budget slice。
-- 默认历史预算为 **20k**；coding/debugging 场景推荐通过 `context_builder.rebuild` 先尝试 **50k**，只有 50k 仍不足时再尝试 **110k**。
-- 复杂任务的默认策略：先用 `context_ledger.memory` 做 `search` → `query(detail=true)` 证据检索，再决定是否触发 `context_builder.rebuild`；禁止无证据的惯性重建。
-- `budgetRatio` 仅作兼容回退；当 `historyBudgetTokens` 存在时优先使用固定 token 预算。
-- `MEMORY.md` 不直接注入模型上下文；长期记忆需保持精简，只记录可验证的 ground truth。
-
----
-
-## 5. UI 与 API
-
-### 5.1 UI（Settings）
-在左侧 `Settings` 新增 Context Builder 控件：
-- 启用/禁用
-- `mode` 选择：minimal / moderate / aggressive
-- `historyBudgetTokens`（历史 token 预算，默认 20k）
-- `ranking` 选择：off / dryrun / active
-
-### 5.2 API
-- `GET /api/v1/context-builder/settings`
-- `PUT /api/v1/context-builder/settings`
-
----
-
-## 6. Context Monitor 可观测性
-
-Context Monitor 会显示：
-- `history-only`
-- `mode`
-- `ranking` 状态（含 dryrun）
-- `removed/supplemented` 计数（metadata）
-
-并固定交互语义：
-1. 选 Round（最小单元）
-2. 看该 Round 的 Selected Context 组合
-3. 右侧对照原始 Ledger（已选/未选）
-4. 点击查看详情
-
----
-
-## 7. 实现落点
-
-- `src/runtime/context-builder.ts`：三模式核心逻辑、moderate 补充规则、当前 task 尾部约束
-- `src/core/user-settings.ts`：`contextBuilder.mode` + `enableModelRanking`(含 dryrun)
-- `src/server/routes/system.ts`：Context Builder settings API
-- `src/orchestration/session-manager.ts`：将 `mode` 传入 `buildContext`
-- `src/server/routes/ledger-routes.ts`：Context Monitor 返回 mode/ranking 元数据
-- `ui/src/components/LeftSidebar/LeftSidebar.tsx`：Settings 选择器
-
----
-
-## 8. Indexed Continuity（2026-03-28）
-
-为避免“首轮重建后，后续又退回 raw session 顺序”的断裂，新增 `contextBuilderHistoryIndex` 持久化索引（session context 字段）：
-
-- 首次 bootstrap / on-demand rebuild 后，落盘：
-  - `historySelectedMessageIds`
-  - `currentContextMessageIds`
-  - `pinnedMessageIds`（可选）
-  - `anchorMessageId` / `anchorTimestamp`
-- 后续轮次优先走 `context_builder_indexed`：
-  - 合并顺序：`pinned + 历史选中 + 上轮 current + 本轮 delta(anchor 之后)`
-  - 受 `currentContextMaxItems` 约束滚动更新 current 区
-- 仅当索引缺失或索引产物为空时，才退回 bootstrap / raw fallback。
-
-同时，模型侧历史组装新增保护：
-- 当 `contextHistorySource` 为 `context_builder_*` 时，不再让 `metadata.kernelApiHistory` 覆盖 builder 产物。
+以下不再允许作为 context builder 主流程：
+- tool 内自己 buildContext
+- runtime-facade 内自己 compact/rebuild
+- provider 报错后仅返回 `contextRebuildTriggered=true` 但不真正改写 session
+- 读取 raw session 之外的另一份“运行时历史视图”

@@ -19,7 +19,7 @@
 
 ### 引用散乱
 - kernel-agent-base、memory-session-manager 用旧的
-- session-manager、message-preflight-compact、projects route 用新的
+- session-manager、context-history overflow rebuild、projects route 用新的
 
 ## 目标架构
 

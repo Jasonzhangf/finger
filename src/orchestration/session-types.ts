@@ -193,6 +193,7 @@ export interface ISessionManager {
   getMessageHistory(sessionId: string, limit?: number): SessionMessage[];
   deleteMessage(sessionId: string, messageId: string): boolean;
   restoreSession(sessionId: string): Session | null;
+  resolveLedgerRootForSession?(sessionId: string): string | null;
   restoreAllSessions(): number;
   cleanupExpiredSessions(ttlDays?: number): number;
   getStats(): SessionStats;

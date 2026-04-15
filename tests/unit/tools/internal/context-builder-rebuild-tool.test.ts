@@ -3,10 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { contextBuilderRebuildTool } from '../../../../src/tools/internal/context-builder-rebuild-tool.js';
-import { consumeContextBuilderOnDemandView, peekContextBuilderOnDemandView } from '../../../../src/runtime/context-builder-on-demand-state.js';
 
 function writeLedger(rootDir: string): { sessionId: string; agentId: string } {
-  const sessionId = 'ctx-rebuild-s1';
+  const sessionId = `ctx-rebuild-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const agentId = 'finger-system-agent';
   const mode = 'main';
   const dir = join(rootDir, sessionId, agentId, mode);
@@ -15,48 +14,33 @@ function writeLedger(rootDir: string): { sessionId: string; agentId: string } {
   const now = Date.now();
   const entries = [
     {
-      id: 'm1',
-      timestamp_ms: now - 10_000,
-      timestamp_iso: new Date(now - 10_000).toISOString(),
-      session_id: sessionId,
-      agent_id: agentId,
-      mode,
-      event_type: 'session_message',
-      payload: { role: 'user', content: '修复 mailbox 通知逻辑', token_count: 12 },
-    },
-    {
-      id: 'm2',
-      timestamp_ms: now - 9_000,
-      timestamp_iso: new Date(now - 9_000).toISOString(),
-      session_id: sessionId,
-      agent_id: agentId,
-      mode,
-      event_type: 'session_message',
+      event_type: 'context_compact',
+      timestamp_ms: now - 10000,
+      timestamp_iso: new Date(now - 10000).toISOString(),
       payload: {
-        role: 'assistant',
-        content: '已分析 mailbox 流程',
-        token_count: 14,
-        metadata: { tags: ['mailbox', 'notification'], topic: 'mailbox' },
+        replacement_history: [
+          {
+            request: '修复 mailbox 通知逻辑',
+            summary: '已分析 mailbox 路由和通知发送',
+            key_tools: ['read_file'],
+            key_reads: ['src/server/routes/message-route-execution.ts'],
+            key_writes: [],
+            tags: ['mailbox', 'notification'],
+            topic: 'mailbox notification',
+            tokenCount: 120,
+            key_entities: ['mailbox', 'notification'],
+          },
+        ],
       },
-    },
-    {
-      id: 'm3',
-      timestamp_ms: now - 2_000,
-      timestamp_iso: new Date(now - 2_000).toISOString(),
-      session_id: sessionId,
-      agent_id: agentId,
-      mode,
-      event_type: 'session_message',
-      payload: { role: 'user', content: '现在处理 context builder 相关问题', token_count: 16 },
     },
   ];
 
-  writeFileSync(join(dir, 'context-ledger.jsonl'), `${entries.map((item) => JSON.stringify(item)).join('\n')}\n`, 'utf-8');
+  writeFileSync(join(dir, 'context-ledger.jsonl'), entries.map((item) => JSON.stringify(item)).join('\n') + '\n', 'utf-8');
   return { sessionId, agentId };
 }
 
 describe('context_builder.rebuild tool', () => {
-  it('rebuilds context and returns metadata + selected blocks', async () => {
+  it('rebuilds context through the single context-history executor and returns rebuilt messages', async () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'finger-context-rebuild-tool-'));
     const { sessionId, agentId } = writeLedger(rootDir);
 
@@ -65,10 +49,20 @@ describe('context_builder.rebuild tool', () => {
         {
           session_id: sessionId,
           agent_id: agentId,
-          current_prompt: 'context builder',
+          current_prompt: 'mailbox notification',
           include_messages: true,
           message_limit: 5,
-          _runtime_context: { root_dir: rootDir },
+          _runtime_context: {
+            root_dir: rootDir,
+            session_messages: [
+              {
+                id: 'ss1',
+                role: 'user',
+                content: '先处理 mailbox 通知问题',
+                timestamp: new Date(Date.now() - 5000).toISOString(),
+              },
+            ],
+          },
         },
         {
           invocationId: 'tool-ctx-rebuild-1',
@@ -84,25 +78,11 @@ describe('context_builder.rebuild tool', () => {
       expect(result.appliesNextTurn).toBe(true);
       expect(result.sessionId).toBe(sessionId);
       expect(result.agentId).toBe(agentId);
-      expect(Array.isArray(result.selectedBlockIds)).toBe(true);
       expect(result.selectedBlockIds.length).toBeGreaterThan(0);
-      expect(result.metadata).toEqual(expect.objectContaining({
-        rawTaskBlockCount: expect.any(Number),
-        targetBudget: 20_000,
-      }));
-      expect(result.messages).toBeDefined();
+      expect(result.metadata?.targetBudget).toBe(20000);
+      expect(result.__rebuiltMessages?.length).toBeGreaterThan(0);
+      expect(JSON.stringify(result.__rebuiltMessages)).toContain('mailbox');
       expect((result.messages ?? []).length).toBeGreaterThan(0);
-
-      const staged = peekContextBuilderOnDemandView(sessionId, agentId);
-      expect(staged).toBeDefined();
-      expect(staged?.sessionId).toBe(sessionId);
-      expect(staged?.agentId).toBe(agentId);
-      expect(staged?.selectedBlockIds.length).toBeGreaterThan(0);
-
-      const consumed = consumeContextBuilderOnDemandView(sessionId, agentId);
-      expect(consumed).toBeDefined();
-      const consumedAgain = consumeContextBuilderOnDemandView(sessionId, agentId);
-      expect(consumedAgain).toBeUndefined();
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -117,11 +97,21 @@ describe('context_builder.rebuild tool', () => {
         {
           session_id: sessionId,
           agent_id: agentId,
-          current_prompt: 'mailbox coding task',
-          rebuild_budget: 50_000,
-          budget_tokens: 60_000,
-          target_budget: 70_000,
-          _runtime_context: { root_dir: rootDir },
+          current_prompt: 'mailbox notification',
+          rebuild_budget: 50000,
+          budget_tokens: 60000,
+          target_budget: 70000,
+          _runtime_context: {
+            root_dir: rootDir,
+            session_messages: [
+              {
+                id: 'ss1',
+                role: 'user',
+                content: 'mailbox notification',
+                timestamp: new Date().toISOString(),
+              },
+            ],
+          },
         },
         {
           invocationId: 'tool-ctx-rebuild-2',
@@ -133,96 +123,8 @@ describe('context_builder.rebuild tool', () => {
       );
 
       expect(result.ok).toBe(true);
-      expect(result.metadata.targetBudget).toBe(50_000);
-
-      const staged = consumeContextBuilderOnDemandView(sessionId, agentId);
-      expect(staged?.targetBudget).toBe(50_000);
-    } finally {
-      rmSync(rootDir, { recursive: true, force: true });
-    }
-  });
-
-  it('uses budget_tokens when rebuild_budget is absent', async () => {
-    const rootDir = mkdtempSync(join(tmpdir(), 'finger-context-rebuild-tool-'));
-    const { sessionId, agentId } = writeLedger(rootDir);
-
-    try {
-      const result = await contextBuilderRebuildTool.execute(
-        {
-          session_id: sessionId,
-          agent_id: agentId,
-          current_prompt: 'mailbox coding task',
-          budget_tokens: 50_000,
-          target_budget: 70_000,
-          _runtime_context: { root_dir: rootDir },
-        },
-        {
-          invocationId: 'tool-ctx-rebuild-3',
-          cwd: process.cwd(),
-          timestamp: new Date().toISOString(),
-          sessionId,
-          agentId,
-        },
-      );
-
-      expect(result.ok).toBe(true);
-      expect(result.metadata.targetBudget).toBe(50_000);
-
-      const staged = consumeContextBuilderOnDemandView(sessionId, agentId);
-      expect(staged?.targetBudget).toBe(50_000);
-    } finally {
-      rmSync(rootDir, { recursive: true, force: true });
-    }
-  });
-
-  it('rebuilds from runtime session snapshot when provided (without ledger replay)', async () => {
-    const rootDir = mkdtempSync(join(tmpdir(), 'finger-context-rebuild-tool-session-'));
-    const sessionId = 'ctx-runtime-snapshot';
-    const agentId = 'finger-system-agent';
-    try {
-      const result = await contextBuilderRebuildTool.execute(
-        {
-          session_id: sessionId,
-          agent_id: agentId,
-          current_prompt: 'context continuity',
-          include_messages: true,
-          _runtime_context: {
-            root_dir: rootDir,
-            session_messages: [
-              {
-                id: 'ss1',
-                role: 'user',
-                content: 'task one request',
-                timestamp: new Date(Date.now() - 10_000).toISOString(),
-              },
-              {
-                id: 'ss2',
-                role: 'assistant',
-                content: 'task one summary',
-                timestamp: new Date(Date.now() - 9_000).toISOString(),
-              },
-              {
-                id: 'ss3',
-                role: 'user',
-                content: 'task two request',
-                timestamp: new Date(Date.now() - 1_000).toISOString(),
-              },
-            ],
-          },
-        },
-        {
-          invocationId: 'tool-ctx-rebuild-runtime-1',
-          cwd: process.cwd(),
-          timestamp: new Date().toISOString(),
-          sessionId,
-          agentId,
-        },
-      );
-
-      expect(result.ok).toBe(true);
-      expect(result.selectedBlockIds.length).toBeGreaterThan(0);
-      expect(result.messages?.some((item) => item.id === 'ss1')).toBe(true);
-      expect(result.messages?.some((item) => item.id === 'ss3')).toBe(true);
+      expect(result.targetBudget).toBe(50000);
+      expect(result.metadata?.targetBudget).toBe(50000);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

@@ -1,102 +1,92 @@
-/**
- * Context History Executor - 执行入口
- * 
- * 整合 decision + rebuild，统一执行入口
- */
-
 import type { SessionMessage } from '../../orchestration/session-types.js';
-import type { RebuildDecision, RebuildResult } from './types.js';
+import type { ExecuteRebuildOptions, RebuildDecision, RebuildResult } from './types.js';
+import { DEFAULT_CONFIG } from './types.js';
+import { estimateMessageTokens } from './utils.js';
 import { makeRebuildDecision } from './decision.js';
 import { rebuildSession } from './rebuild.js';
-import { DEFAULT_CONFIG } from './types.js';
-import { logger } from '../../core/logger.js';
 
-const log = logger.module('ContextHistoryExecutor');
-
-/**
- * 执行 Rebuild
- */
 export async function executeRebuild(
   sessionId: string,
   ledgerPath: string,
   messages: SessionMessage[],
   userInput: string,
   currentTopic?: string,
-  topicShiftConfidence?: number
+  topicShiftConfidence?: number,
+  options?: ExecuteRebuildOptions,
 ): Promise<{ decision: RebuildDecision; result: RebuildResult | null }> {
-  // 1. 判断是否需要 rebuild
-  const decision = makeRebuildDecision(
-    sessionId,
-    messages,
-    userInput,
-    currentTopic,
-    topicShiftConfidence
-  );
-  
-  // 2. 如果不需要 rebuild，返回 null
-  if (!decision.shouldRebuild) {
-    log.debug('No rebuild needed', { sessionId, currentTokens: decision.currentTokens });
+  const budgetTokens = options?.budgetTokens ?? DEFAULT_CONFIG.budgetTokens;
+  const forcedMode = options?.forceMode ?? null;
+  const decision: RebuildDecision = forcedMode
+    ? {
+        shouldRebuild: true,
+        trigger: 'manual',
+        mode: forcedMode,
+        currentTokens: messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0),
+        budgetTokens,
+        searchKeywords: options?.keywords ?? [],
+        reason: 'forced',
+      }
+    : makeRebuildDecision(sessionId, messages, userInput, currentTopic, topicShiftConfidence, budgetTokens);
+
+  if (decision.shouldRebuild === false || decision.mode === null) {
     return { decision, result: null };
   }
-  
-  // 3. 执行 rebuild
-  log.info('Executing rebuild', {
-    sessionId,
-    trigger: decision.trigger,
-    mode: decision.mode,
-    currentTokens: decision.currentTokens,
-  });
-  
-  const result = await rebuildSession(
+
+  const result = await rebuildSession({
     sessionId,
     ledgerPath,
-    decision.mode!,
+    mode: decision.mode,
+    currentMessages: messages,
     userInput,
-    decision.searchKeywords,
-    decision.budgetTokens
-  );
-  
-  // 4. 返回结果
+    keywords: options?.keywords ?? decision.searchKeywords,
+    budgetTokens,
+  });
+
   return { decision, result };
 }
 
-/**
- * 检查是否需要 rebuild（不执行）
- */
 export function checkRebuildNeeded(
   sessionId: string,
   messages: SessionMessage[],
   userInput: string,
   currentTopic?: string,
-  topicShiftConfidence?: number
+  topicShiftConfidence?: number,
+  budgetTokens: number = DEFAULT_CONFIG.budgetTokens,
 ): RebuildDecision {
-  return makeRebuildDecision(
-    sessionId,
-    messages,
-    userInput,
-    currentTopic,
-    topicShiftConfidence
-  );
+  return makeRebuildDecision(sessionId, messages, userInput, currentTopic, topicShiftConfidence, budgetTokens);
 }
 
-/**
- * 强制执行 rebuild（跳过决策）
- */
 export async function forceRebuild(
   sessionId: string,
   ledgerPath: string,
   mode: 'topic' | 'overflow',
-  userInput?: string,
-  keywords?: string[]
+  userInput: string = '',
+  keywords?: string[],
+  budgetTokens: number = DEFAULT_CONFIG.budgetTokens,
+  currentMessages: SessionMessage[] = [],
 ): Promise<RebuildResult> {
-  log.info('Force rebuild', { sessionId, mode });
-  
-  return rebuildSession(
+  const executed = await executeRebuild(
     sessionId,
     ledgerPath,
-    mode,
+    currentMessages,
     userInput,
-    keywords,
-    DEFAULT_CONFIG.budgetTokens
+    undefined,
+    undefined,
+    {
+      forceMode: mode,
+      keywords,
+      budgetTokens,
+    },
   );
+
+  return executed.result ?? {
+    ok: false,
+    mode,
+    messages: [],
+    digestCount: 0,
+    rawMessageCount: 0,
+    totalTokens: 0,
+    error: 'forced_rebuild_failed',
+    metadata: { rebuildMode: mode, targetBudget: budgetTokens },
+  };
 }

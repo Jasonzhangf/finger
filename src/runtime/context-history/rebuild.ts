@@ -1,361 +1,330 @@
-/**
- * Context History Rebuild - Session 重建
- * 
- * 两种 Rebuild 模式：
- * 1. 话题 Rebuild：搜索 digest → 相关性筛选 → 预算框选 → 时间排序
- * 2. 超限 Rebuild：直接读 ledger → 时间排序 → 预算框选
- * 
- * 核心：
- * - digest 已存在于 Ledger，不生成新 digest
- * - 只重建 Session.messages
- */
-
 import fs from 'fs';
-import path from 'path';
 import type { SessionMessage } from '../../orchestration/session-types.js';
-import type { TaskDigest, RebuildMode, RebuildResult, TopicSearchOptions } from './types.js';
+import type { RebuildMode, RebuildResult, SearchResult, TaskDigest, TopicSearchOptions } from './types.js';
 import { DEFAULT_CONFIG } from './types.js';
 import {
-  tokenizeUserInput,
-  sortByRelevanceDescending,
-  filterByRelevanceThreshold,
-  takeTopPercent,
-  budgetSelectByRelevance,
-  budgetSelectByTime,
-  sortByTimeAscending,
+  buildDigestsFromMessages,
+  dedupeDigestsBySignature,
   digestToSessionMessage,
-  validateTokenBudget,
-  getRecentRounds,
   estimateDigestTokens,
+  filterByRelevanceThreshold,
+  selectNewestDigestsWithinBudget,
+  selectTailMessagesWithinBudget,
+  sessionDigestMessageToTaskDigest,
+  sortByRelevanceDescending,
+  sortByTimeAscending,
+  tokenizeUserInput,
+  validateTokenBudget,
 } from './utils.js';
 import { acquireSessionLock, releaseSessionLock } from './lock.js';
-import { logger } from '../../core/logger.js';
 
-const log = logger.module('ContextHistoryRebuild');
+interface LedgerEntry {
+  event_type?: string;
+  timestamp_ms?: number;
+  timestamp_iso?: string;
+  payload?: Record<string, unknown>;
+  ledgerLine?: number;
+}
 
-/**
- * 话题 Rebuild
- * 流程：Tokenize → 搜索 → 相关性排序 → top 30% → 预算框选 → 时间排序
- */
+function readLedgerEntries(ledgerPath: string): LedgerEntry[] {
+  if (fs.existsSync(ledgerPath) === false) return [];
+  return fs.readFileSync(ledgerPath, 'utf-8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .flatMap((line, index) => {
+      try {
+        const parsed = JSON.parse(line) as LedgerEntry;
+        return [{ ...parsed, ledgerLine: index + 1 }];
+      } catch {
+        return [];
+      }
+    });
+}
+
+function coerceDigestCandidate(
+  raw: Record<string, unknown>,
+  fallback: { timestamp: string; ledgerLine?: number; source: TaskDigest['source']; tags?: string[] },
+): TaskDigest | null {
+  const request = typeof raw.request === 'string'
+    ? raw.request
+    : typeof raw.content_summary === 'string'
+      ? raw.content_summary
+      : typeof raw.summary === 'string'
+        ? raw.summary
+        : '';
+  const summary = typeof raw.summary === 'string'
+    ? raw.summary
+    : typeof raw.content_summary === 'string'
+      ? raw.content_summary
+      : request;
+  const topic = typeof raw.topic === 'string'
+    ? raw.topic
+    : Array.isArray(raw.key_entities)
+      ? raw.key_entities.filter((item): item is string => typeof item === 'string').slice(0, 4).join(' ')
+      : '';
+  const tags = Array.isArray(raw.tags)
+    ? raw.tags.filter((item): item is string => typeof item === 'string')
+    : (fallback.tags ?? []);
+  const keyTools = Array.isArray(raw.key_tools)
+    ? raw.key_tools.filter((item): item is string => typeof item === 'string')
+    : Array.isArray(raw.tool_calls)
+      ? raw.tool_calls.filter((item): item is string => typeof item === 'string')
+      : [];
+  const keyEntities = Array.isArray(raw.key_entities)
+    ? raw.key_entities.filter((item): item is string => typeof item === 'string')
+    : [];
+
+  const normalizedRequest = request.trim();
+  const normalizedSummary = summary.trim();
+  const normalizedTopic = topic.trim() || tags.slice(0, 3).join(' ')
+  if (normalizedRequest == '' && normalizedSummary == '' && normalizedTopic == '') return null;
+
+  const digest: TaskDigest = {
+    request: normalizedRequest || normalizedSummary || normalizedTopic || 'historical digest',
+    summary: normalizedSummary || normalizedRequest || normalizedTopic || 'historical digest',
+    key_tools: keyTools,
+    key_reads: Array.isArray(raw.key_reads) ? raw.key_reads.filter((item): item is string => typeof item === 'string') : [],
+    key_writes: Array.isArray(raw.key_writes) ? raw.key_writes.filter((item): item is string => typeof item === 'string') : [],
+    tags,
+    topic: normalizedTopic || normalizedRequest || normalizedSummary,
+    tokenCount: typeof raw.tokenCount === 'number'
+      ? Math.max(1, Math.floor(raw.tokenCount))
+      : typeof raw.token_count === 'number'
+        ? Math.max(1, Math.floor(raw.token_count))
+        : 0,
+    timestamp: fallback.timestamp,
+    ...(fallback.ledgerLine !== undefined ? { ledgerLine: fallback.ledgerLine } : {}),
+    ...(keyEntities.length > 0 ? { key_entities: keyEntities } : {}),
+    source: fallback.source,
+  };
+  digest.tokenCount = Math.max(1, digest.tokenCount || estimateDigestTokens(digest));
+  return digest;
+}
+
+function readLedgerDigests(ledgerPath: string): TaskDigest[] {
+  const entries = readLedgerEntries(ledgerPath);
+  const digests: TaskDigest[] = [];
+
+  for (const entry of entries) {
+    const timestamp = entry.timestamp_iso || (typeof entry.timestamp_ms === 'number' ? new Date(entry.timestamp_ms).toISOString() : new Date().toISOString());
+    const payload = entry.payload ?? {};
+    if (entry.event_type === 'context_compact') {
+      const history = Array.isArray(payload.replacement_history)
+        ? payload.replacement_history.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && Array.isArray(item) === false)
+        : [];
+      for (const item of history) {
+        const digest = coerceDigestCandidate(item, {
+          timestamp,
+          ledgerLine: entry.ledgerLine,
+          source: 'ledger_context_compact',
+        });
+        if (digest) digests.push(digest);
+      }
+      continue;
+    }
+
+    if (entry.event_type === 'digest_block') {
+      const tags = Array.isArray(payload.tags)
+        ? payload.tags.filter((item): item is string => typeof item === 'string')
+        : [];
+      const messages = Array.isArray(payload.messages)
+        ? payload.messages.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && Array.isArray(item) === false)
+        : [];
+      for (const message of messages) {
+        const digest = coerceDigestCandidate(message, {
+          timestamp,
+          ledgerLine: entry.ledgerLine,
+          source: 'turn_digest',
+          tags,
+        });
+        if (digest) digests.push(digest);
+      }
+    }
+  }
+
+  return dedupeDigestsBySignature(digests);
+}
+
+function buildSessionDigestCandidates(currentMessages: SessionMessage[]): TaskDigest[] {
+  const existingDigestMessages = currentMessages
+    .map((message) => sessionDigestMessageToTaskDigest(message))
+    .filter((item): item is TaskDigest => item !== null);
+  const rawDigests = buildDigestsFromMessages(currentMessages.filter((message) => message.metadata?.compactDigest !== true));
+  return dedupeDigestsBySignature(existingDigestMessages.concat(rawDigests));
+}
+
+function scoreDigestRelevance(digest: TaskDigest, keywords: string[]): SearchResult | null {
+  const haystack = [
+    digest.request,
+    digest.summary,
+    digest.topic,
+    ...digest.tags,
+    ...(digest.key_entities ?? []),
+    ...digest.key_tools,
+    ...digest.key_reads,
+    ...digest.key_writes,
+  ].join(' ').toLowerCase();
+  const matchedKeywords = keywords.filter((keyword) => haystack.includes(keyword.toLowerCase()));
+  if (matchedKeywords.length === 0) return null;
+  return {
+    digest,
+    relevance: matchedKeywords.length / Math.max(1, keywords.length),
+    matchedKeywords,
+  };
+}
+
+function withContextZone(message: SessionMessage, zone: 'historical_memory' | 'working_set', rebuildMode: RebuildMode): SessionMessage {
+  return {
+    ...message,
+    metadata: {
+      ...(message.metadata ?? {}),
+      contextZone: zone,
+      contextHistorySource: 'context_history_single_source',
+      contextHistoryMode: rebuildMode,
+    },
+  };
+}
+
+function matchedKeywordsForDigest(digest: TaskDigest, keywords: string[]): string[] {
+  const haystack = [digest.request, digest.summary, digest.topic, ...digest.tags, ...(digest.key_entities ?? [])].join(' ').toLowerCase();
+  return keywords.filter((keyword) => haystack.includes(keyword.toLowerCase()));
+}
+
 export async function rebuildByTopic(
   sessionId: string,
   ledgerPath: string,
   userInput: string,
-  options: TopicSearchOptions
+  options: TopicSearchOptions,
 ): Promise<RebuildResult> {
-  const { keywords, topK, relevanceThreshold, budgetTokens, timeoutMs } = options;
-  
   await acquireSessionLock(sessionId, 'rebuild');
-  
   try {
-    log.info('Starting topic rebuild', { sessionId, keywords, budgetTokens });
-    
-    // 1. Tokenize 用户输入
-    const searchKeywords = keywords.length > 0 ? keywords : tokenizeUserInput(userInput);
-    
-    if (searchKeywords.length === 0) {
-      log.warn('No search keywords', { sessionId });
+    const keywords = options.keywords.length > 0 ? options.keywords : tokenizeUserInput(userInput);
+    if (keywords.length === 0) {
       return {
         ok: false,
+        mode: 'topic',
         messages: [],
         digestCount: 0,
+        rawMessageCount: 0,
         totalTokens: 0,
         error: 'no_keywords',
-        mode: 'topic',
+        metadata: { rebuildMode: 'topic', targetBudget: options.budgetTokens },
       };
     }
-    
-    // 2. 搜索 digest
-    const searchResults = await searchDigests(ledgerPath, searchKeywords, topK, timeoutMs);
-    
-    if (searchResults.length === 0) {
-      log.warn('No search results', { sessionId, keywords: searchKeywords });
-      return {
-        ok: true,
-        messages: [],
-        digestCount: 0,
-        totalTokens: 0,
-        mode: 'topic',
-      };
+
+    const candidates = dedupeDigestsBySignature(readLedgerDigests(ledgerPath).concat(buildSessionDigestCandidates(options.currentMessages ?? [])));
+    const scored = candidates
+      .map((digest) => scoreDigestRelevance(digest, keywords))
+      .filter((item): item is SearchResult => item !== null);
+    const filtered = filterByRelevanceThreshold(scored, options.relevanceThreshold);
+    const ranked = sortByRelevanceDescending(filtered.length > 0 ? filtered : scored).slice(0, options.topK);
+
+    const selected: SearchResult[] = [];
+    let usedTokens = 0;
+    for (const item of ranked) {
+      const tokenCount = Math.max(1, item.digest.tokenCount || estimateDigestTokens(item.digest));
+      if (selected.length > 0 && usedTokens + tokenCount > options.budgetTokens) break;
+      selected.push({ ...item, digest: { ...item.digest, tokenCount } });
+      usedTokens += tokenCount;
     }
-    
-    // 3. 按相关性排序
-    const sortedByRelevance = sortByRelevanceDescending(searchResults);
-    
-    // 4. 取 top 30%
-    const topResults = takeTopPercent(sortedByRelevance, 0.3);
-    
-    // 5. 预算框选
-    const budgetedResults = budgetSelectByRelevance(topResults, budgetTokens);
-    
-    // 6. 按时间排序（从早到晚）
-    const finalDigests = sortByTimeAscending(budgetedResults.map(r => r.digest));
-    
-    // 7. 转换为 SessionMessage
-    const digestMessages = finalDigests.map(digestToSessionMessage);
-    
-    // 8. 添加最近 3 轮
-    const allMessages = readLedgerMessages(ledgerPath);
-    const recentMessages = getRecentRounds(allMessages, 3);
-    
-    // 9. 组建最终 messages
-    const finalMessages = [...digestMessages, ...recentMessages];
-    
-    // 10. 二次校验
-    const validation = validateTokenBudget(finalMessages, budgetTokens + 5000); // digest 20K + recent 5K
-    if (!validation.ok) {
-      log.warn('Token budget overflow after rebuild', {
-        actualTokens: validation.actualTokens,
-        overflow: validation.overflow,
-      });
-    }
-    
-    log.info('Topic rebuild completed', {
-      sessionId,
-      digestCount: digestMessages.length,
-      recentCount: recentMessages.length,
-      totalTokens: validation.actualTokens,
-    });
-    
+
+    const finalDigests = sortByTimeAscending(selected.map((item) => item.digest));
+    const messages = finalDigests.map((digest) => withContextZone(
+      digestToSessionMessage(digest, { matchedKeywords: matchedKeywordsForDigest(digest, keywords) }),
+      'historical_memory',
+      'topic',
+    ));
+    const validation = validateTokenBudget(messages, options.budgetTokens);
+
     return {
       ok: true,
-      messages: finalMessages,
-      digestCount: digestMessages.length,
-      totalTokens: validation.actualTokens,
       mode: 'topic',
+      messages,
+      digestCount: finalDigests.length,
+      rawMessageCount: 0,
+      totalTokens: validation.actualTokens,
+      metadata: {
+        rebuildMode: 'topic',
+        targetBudget: options.budgetTokens,
+        keywords,
+        selectedDigestCount: finalDigests.length,
+        selectedDigestIds: messages.map((message) => message.id),
+      },
     };
   } finally {
     releaseSessionLock(sessionId);
   }
 }
 
-/**
- * 超限 Rebuild
- * 流程：直接读 ledger → 时间排序 → 预算框选
- */
 export async function rebuildByOverflow(
   sessionId: string,
   ledgerPath: string,
-  budgetTokens: number
+  currentMessages: SessionMessage[],
+  budgetTokens: number,
 ): Promise<RebuildResult> {
   await acquireSessionLock(sessionId, 'rebuild');
-  
   try {
-    log.info('Starting overflow rebuild', { sessionId, budgetTokens });
-    
-    // 1. 直接读 ledger digest
-    const digests = readLedgerDigests(ledgerPath);
-    
-    if (digests.length === 0) {
-      log.warn('No digests in ledger', { sessionId });
-      // 没有 digest，只保留最近 3 轮
-      const allMessages = readLedgerMessages(ledgerPath);
-      const recentMessages = getRecentRounds(allMessages, 3);
-      return {
-        ok: true,
-        messages: recentMessages,
-        digestCount: 0,
-        totalTokens: 0,
-        mode: 'overflow',
-      };
-    }
-    
-    // 2. 预算框选（时间从新到旧）
-    const budgetedDigests = budgetSelectByTime(digests, budgetTokens);
-    
-    // 3. 按时间排序（从早到晚）
-    const finalDigests = sortByTimeAscending(budgetedDigests);
-    
-    // 4. 转换为 SessionMessage
-    const digestMessages = finalDigests.map(digestToSessionMessage);
-    
-    // 5. 添加最近 3 轮
-    const allMessages = readLedgerMessages(ledgerPath);
-    const recentMessages = getRecentRounds(allMessages, 3);
-    
-    // 6. 组建最终 messages
-    const finalMessages = [...digestMessages, ...recentMessages];
-    
-    // 7. 二次校验
-    const validation = validateTokenBudget(finalMessages, budgetTokens + 5000);
-    if (!validation.ok) {
-      log.warn('Token budget overflow after overflow rebuild', {
-        actualTokens: validation.actualTokens,
-        overflow: validation.overflow,
-      });
-    }
-    
-    log.info('Overflow rebuild completed', {
-      sessionId,
-      digestCount: digestMessages.length,
-      recentCount: recentMessages.length,
-      totalTokens: validation.actualTokens,
-    });
-    
+    const existingDigestCandidates = currentMessages
+      .map((message) => sessionDigestMessageToTaskDigest(message))
+      .filter((item): item is TaskDigest => item !== null);
+    const rawMessages = currentMessages.filter((message) => message.metadata?.compactDigest !== true);
+    const rawWindow = selectTailMessagesWithinBudget(rawMessages, budgetTokens);
+    const olderRawMessages = rawMessages.slice(0, rawWindow.startIndex);
+    const historicalDigests = dedupeDigestsBySignature(
+      readLedgerDigests(ledgerPath)
+        .concat(existingDigestCandidates)
+        .concat(buildDigestsFromMessages(olderRawMessages)),
+    );
+    const selectedDigests = selectNewestDigestsWithinBudget(historicalDigests, DEFAULT_CONFIG.historicalDigestBudgetTokens);
+
+    const digestMessages = selectedDigests.map((digest) => withContextZone(
+      digestToSessionMessage(digest),
+      'historical_memory',
+      'overflow',
+    ));
+    const workingSetMessages = rawWindow.messages.map((message) => withContextZone(message, 'working_set', 'overflow'));
+    const messages = digestMessages.concat(workingSetMessages);
+    const validation = validateTokenBudget(messages, budgetTokens + DEFAULT_CONFIG.historicalDigestBudgetTokens);
+
     return {
       ok: true,
-      messages: finalMessages,
-      digestCount: digestMessages.length,
-      totalTokens: validation.actualTokens,
       mode: 'overflow',
+      messages,
+      digestCount: digestMessages.length,
+      rawMessageCount: workingSetMessages.length,
+      totalTokens: validation.actualTokens,
+      metadata: {
+        rebuildMode: 'overflow',
+        targetBudget: budgetTokens,
+        recentRawBudget: budgetTokens,
+        historicalDigestBudget: DEFAULT_CONFIG.historicalDigestBudgetTokens,
+        rawWindowStartIndex: rawWindow.startIndex,
+      },
     };
   } finally {
     releaseSessionLock(sessionId);
   }
 }
 
-/**
- * 搜索 digest（使用 mempalace 或 fts）
- */
-async function searchDigests(
-  ledgerPath: string,
-  keywords: string[],
-  topK: number,
-  timeoutMs: number
-): Promise<{ digest: TaskDigest; relevance: number }[]> {
-  // TODO: 实现真正的搜索（mempalace/fts）
-  // 当前先用简单的文本匹配作为 fallback
-  try {
-    const entries = readLedgerEntries(ledgerPath);
-    const compactEntries = entries.filter(e => e.event_type === 'context_compact');
-    
-    const results: { digest: TaskDigest; relevance: number }[] = [];
-    
-    for (const entry of compactEntries) {
-      const payload = entry.payload as Record<string, unknown>;
-      if (!payload) continue;
-      
-      const digestMessages = Array.isArray(payload.messages) ? payload.messages : [];
-      const replacementHistory = Array.isArray(payload.replacement_history) ? payload.replacement_history : [];
-      const allDigests = [...digestMessages, ...replacementHistory];
-      for (const digest of allDigests) {
-        // 简单相关性计算：关键词匹配
-        // 适配两种 digest 格式：digest_block messages 和 replacement_history
-        const topic = digest.topic || (digest.content_summary ? digest.content_summary.split('\n')[0] : '');
-        const tags = Array.isArray(digest.tags) ? digest.tags : [];
-        const request = digest.request || '';
-        const summary = digest.summary || digest.content_summary || '';
-        const text = [topic, ...tags, request, summary].join(' ');
-        const matchedKeywords = keywords.filter(k => text.toLowerCase().includes(k.toLowerCase()));
-        const relevance = matchedKeywords.length / keywords.length;
-        
-        if (relevance > 0) {
-          digest.timestamp = entry.timestamp_iso || new Date(entry.timestamp_ms).toISOString();
-          digest.ledgerLine = entry.ledgerLine;
-          results.push({ digest, relevance });
-        }
-      }
-      
-      if (results.length >= topK) break;
-    }
-    
-    return results;
-  } catch (error) {
-    log.error('Search digests failed', error as Error, { ledgerPath, keywords });
-    return [];
-  }
-}
-
-/**
- * 读 ledger digest（直接读 context_compact 事件）
- */
-function readLedgerDigests(ledgerPath: string): TaskDigest[] {
-  if (!fs.existsSync(ledgerPath)) {
-    log.warn('Ledger not found', { ledgerPath });
-    return [];
-  }
-  
-  try {
-    const entries = readLedgerEntries(ledgerPath);
-    const compactEntries = entries.filter(e => e.event_type === 'context_compact');
-    
-    const digests: TaskDigest[] = [];
-    
-    for (const entry of compactEntries) {
-      const payload = entry.payload as { replacement_history?: TaskDigest[] };
-      if (!payload.replacement_history) continue;
-      
-      for (const digest of payload.replacement_history) {
-        digest.timestamp = entry.timestamp_iso || new Date(entry.timestamp_ms).toISOString();
-        digest.ledgerLine = entry.ledgerLine;
-        digest.tokenCount = estimateDigestTokens(digest);
-        digests.push(digest);
-      }
-    }
-    
-    return digests;
-  } catch (error) {
-    log.error('Read ledger digests failed', error as Error, { ledgerPath });
-    return [];
-  }
-}
-
-/**
- * 读 ledger 所有消息
- */
-function readLedgerMessages(ledgerPath: string): SessionMessage[] {
-  if (!fs.existsSync(ledgerPath)) {
-    return [];
-  }
-  
-  try {
-    const entries = readLedgerEntries(ledgerPath);
-    const messageEntries = entries.filter(e => e.event_type === 'session_message');
-    
-    return messageEntries.map((entry, idx) => {
-      const payload = entry.payload as { role: string; content: string };
-      return {
-        id: `msg-${entry.timestamp_ms}-${idx}`,
-        role: payload.role as 'user' | 'assistant' | 'system',
-        content: payload.content,
-        timestamp: String(entry.timestamp_iso || new Date(entry.timestamp_ms).toISOString()),
-        metadata: { ledgerLine: entry.ledgerLine },
-      };
-    });
-  } catch (error) {
-    log.error('Read ledger messages failed', error as Error, { ledgerPath });
-    return [];
-  }
-}
-
-/**
- * 读 ledger entries
- */
-function readLedgerEntries(ledgerPath: string): any[] {
-  const content = fs.readFileSync(ledgerPath, 'utf-8');
-  const lines = content.trim().split('\n');
-  
-  return lines.map((line, idx) => {
-    try {
-      const entry = JSON.parse(line);
-      entry.ledgerLine = idx;
-      return entry;
-    } catch {
-      return null;
-    }
-  }).filter(e => e !== null);
-}
-
-/**
- * 统一 Rebuild 入口
- */
-export async function rebuildSession(
-  sessionId: string,
-  ledgerPath: string,
-  mode: RebuildMode,
-  userInput?: string,
-  keywords?: string[],
-  budgetTokens: number = DEFAULT_CONFIG.budgetTokens
-): Promise<RebuildResult> {
-  if (mode === 'topic') {
-    return rebuildByTopic(sessionId, ledgerPath, userInput || '', {
-      keywords: keywords || [],
+export async function rebuildSession(params: {
+  sessionId: string;
+  ledgerPath: string;
+  mode: RebuildMode;
+  currentMessages: SessionMessage[];
+  userInput?: string;
+  keywords?: string[];
+  budgetTokens?: number;
+}): Promise<RebuildResult> {
+  const budgetTokens = params.budgetTokens ?? DEFAULT_CONFIG.budgetTokens;
+  if (params.mode === 'topic') {
+    return rebuildByTopic(params.sessionId, params.ledgerPath, params.userInput ?? '', {
+      keywords: params.keywords ?? [],
       topK: DEFAULT_CONFIG.searchTopK,
       relevanceThreshold: DEFAULT_CONFIG.relevanceThreshold,
       budgetTokens,
-      timeoutMs: DEFAULT_CONFIG.searchTimeoutMs,
+      currentMessages: params.currentMessages,
     });
-  } else {
-    return rebuildByOverflow(sessionId, ledgerPath, budgetTokens);
   }
+  return rebuildByOverflow(params.sessionId, params.ledgerPath, params.currentMessages, budgetTokens);
 }

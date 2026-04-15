@@ -534,9 +534,8 @@ export class SessionManager  {
       ? sessionContext.ownerAgentId.trim()
       : SYSTEM_AGENT_ID;
     const compactLineCount = this.readCompactMemoryLineCountSync(session, resolvedAgentId, 'main');
-    if (compactLineCount <= 0) return false;
-
     const compactSummary = this.readLatestCompactSummarySync(session, resolvedAgentId, 'main');
+    const digestMessages = this.readLedgerDigestMessagesSync(session, resolvedAgentId, 'main');
     const ledgerMessages = this.readLedgerSessionMessagesSync(session, 0, resolvedAgentId);
     const projectedMessages: SessionMessage[] = [];
 
@@ -550,6 +549,7 @@ export class SessionManager  {
       });
     }
 
+    projectedMessages.push(...digestMessages);
     projectedMessages.push(
       ...ledgerMessages.map((message) => ({
         ...message,
@@ -560,13 +560,15 @@ export class SessionManager  {
       })),
     );
 
+    if (compactLineCount <= 0 && compactSummary.length === 0 && digestMessages.length === 0) return false;
     if (projectedMessages.length === 0) return false;
 
     const normalizedProjection = normalizeProjectionMessages(projectedMessages);
     const pointerState = buildProjectionPointerState(normalizedProjection.messages);
+    const historicalPrefixCount = countHistoricalPrefixMessages(normalizedProjection.messages);
     const syncedAt = new Date().toISOString();
     session.messages = normalizedProjection.messages;
-    session.latestCompactIndex = compactLineCount - 1;
+    session.latestCompactIndex = compactLineCount > 0 ? compactLineCount - 1 : historicalPrefixCount - 1;
     session.originalStartIndex = 0;
     session.originalEndIndex = normalizedProjection.messages.length > 0 ? normalizedProjection.messages.length - 1 : 0;
     session.totalTokens = pointerState.totalTokens;
@@ -582,7 +584,7 @@ session.context = {
         agentId: resolvedAgentId,
         mode: 'main',
         projectedMessageCount: projectedMessages.length,
-        latestCompactIndex: compactLineCount - 1,
+        latestCompactIndex: session.latestCompactIndex,
         ...(compactSummary.length > 0 ? { compactSummary } : {}),
       },
     }
@@ -1745,6 +1747,8 @@ session.context = {
       });
     }
 
+    const digestMessages = this.readLedgerDigestMessagesSync(session, resolvedAgentId, resolvedMode);
+    projectedMessages.push(...digestMessages);
     projectedMessages.push(
       ...view.messages.map((msg, index) => ({
         id: msg.messageId || `ledger-${Date.now()}-${index}`,
@@ -1756,12 +1760,13 @@ session.context = {
     );
 
     const compactLineCount = this.readCompactMemoryLineCountSync(session, resolvedAgentId, resolvedMode);
-    if (compactLineCount <= 0 && compactSummary.length === 0) {
+    const normalizedProjection = normalizeProjectionMessages(projectedMessages);
+    const historicalPrefixCount = countHistoricalPrefixMessages(normalizedProjection.messages);
+    if (compactLineCount <= 0 && compactSummary.length === 0 && historicalPrefixCount <= 0) {
       return { applied: false, reason: 'compact_memory_empty' };
     }
 
-    const normalizedProjection = normalizeProjectionMessages(projectedMessages);
-    const latestCompactIndex = compactLineCount > 0 ? compactLineCount - 1 : -1;
+    const latestCompactIndex = compactLineCount > 0 ? compactLineCount - 1 : historicalPrefixCount - 1;
     const pointerState = buildProjectionPointerState(normalizedProjection.messages);
     const syncedAt = new Date().toISOString();
 
@@ -2073,6 +2078,83 @@ session.context = {
     }
   }
 
+  private readLedgerDigestMessagesSync(
+    session: Session,
+    explicitAgentId?: string,
+    mode = 'main',
+  ): SessionMessage[] {
+    const context = session.context ?? {};
+    const rootDir = this.resolveSessionsRoot(session);
+    const ownerAgentId = typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim().length > 0
+      ? context.ownerAgentId.trim()
+      : '';
+    const preferredAgentIds = Array.from(new Set([
+      typeof explicitAgentId === 'string' ? explicitAgentId.trim() : '',
+      ownerAgentId,
+      SYSTEM_AGENT_ID,
+    ].filter((item) => item.length > 0)));
+
+    const readFromLedgerPath = (ledgerPath: string): SessionMessage[] => {
+      if (!fs.existsSync(ledgerPath)) return [];
+      try {
+        const lines = fs.readFileSync(ledgerPath, 'utf-8')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+        const parsed: SessionMessage[] = [];
+        for (const line of lines) {
+          let entry: Record<string, unknown> | null = null;
+          try {
+            entry = JSON.parse(line) as Record<string, unknown>;
+          } catch {
+            entry = null;
+          }
+          if (!entry || entry.event_type !== 'digest_block') continue;
+          const payload = isObjectRecord(entry.payload) ? entry.payload : {};
+          const tags = Array.isArray(payload.tags)
+            ? payload.tags.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+            : [];
+          const digestMessages = Array.isArray(payload.messages)
+            ? payload.messages.filter((item): item is Record<string, unknown> => isObjectRecord(item))
+            : [];
+          for (const [index, digest] of digestMessages.entries()) {
+            const timestamp = typeof digest.timestamp === 'string' && digest.timestamp.trim().length > 0
+              ? digest.timestamp.trim()
+              : typeof entry.timestamp_iso === 'string' && entry.timestamp_iso.trim().length > 0
+                ? entry.timestamp_iso.trim()
+                : new Date().toISOString();
+            parsed.push({
+              id: typeof digest.id === 'string' && digest.id.trim().length > 0
+                ? digest.id.trim()
+                : `ledger-digest-${Date.now()}-${index}`,
+              role: 'assistant',
+              content: buildLedgerDigestProjectionContent(digest, tags),
+              timestamp,
+              metadata: {
+                compactDigest: true,
+                contextZone: 'historical_memory',
+                kernelApiHistory: true,
+                ...(tags.length > 0 ? { tags } : {}),
+              },
+            });
+          }
+        }
+        return parsed;
+      } catch (error) {
+        clog.error('[SessionManager] Failed to read ledger digest messages sync:', error);
+        return [];
+      }
+    };
+
+    for (const agentId of preferredAgentIds) {
+      const ledgerPath = path.join(rootDir, session.id, agentId, mode, 'context-ledger.jsonl');
+      const hit = readFromLedgerPath(ledgerPath);
+      if (hit.length > 0) return hit;
+    }
+
+    return [];
+  }
+
   private buildSessionMessagesFromKernelApiHistory(
     session: Session,
     apiHistory: Record<string, unknown>[],
@@ -2252,6 +2334,9 @@ session.context = {
       ...msg,
       timestamp: msg.timestamp || new Date().toISOString(),
     }));
+    session.totalTokens = session.messages.reduce((sum, message) => sum + estimateTokens(typeof message.content === 'string' ? message.content : JSON.stringify(message.content)), 0);
+    session.originalStartIndex = session.messages.length > 0 ? 0 : -1;
+    session.originalEndIndex = session.messages.length > 0 ? session.messages.length - 1 : -1;
     session.updatedAt = new Date().toISOString();
 
     // Persist to main.json (唯一真源)
@@ -2323,6 +2408,39 @@ session.context = {
 
 function buildMessageSignature(role: SessionMessage['role'], content: string, timestamp: string): string {
   return `${role}\u0000${timestamp}\u0000${content}`;
+}
+
+function countHistoricalPrefixMessages(messages: SessionMessage[]): number {
+  let count = 0;
+  for (const message of messages) {
+    if (!isHistoricalProjectionMessage(message)) break;
+    count += 1;
+  }
+  return count;
+}
+
+function buildLedgerDigestProjectionContent(
+  digest: Record<string, unknown>,
+  tags: string[],
+): string {
+  const taskId = typeof digest.id === 'string' && digest.id.trim().length > 0
+    ? digest.id.trim()
+    : `ledger-digest-${Date.now()}`;
+  const summary = typeof digest.content_summary === 'string' && digest.content_summary.trim().length > 0
+    ? digest.content_summary.trim()
+    : typeof digest.summary === 'string' && digest.summary.trim().length > 0
+      ? digest.summary.trim()
+      : 'historical digest';
+  const keyEntities = Array.isArray(digest.key_entities)
+    ? digest.key_entities.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+  const topic = keyEntities[0] || tags[0] || 'historical';
+  return `<task_digest>${JSON.stringify({
+    task_id: taskId,
+    summary,
+    tags,
+    topic,
+  })}</task_digest>`;
 }
 
 function indexSessionMessagesBySignature(messages: SessionMessage[]): Map<string, SessionMessage[]> {
