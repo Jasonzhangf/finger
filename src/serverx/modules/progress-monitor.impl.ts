@@ -91,7 +91,7 @@ export class ProgressMonitor {
     'mailbox.ack',
   ]);
   private static readonly REPORT_DELIVERY_TIMEOUT_MS = 15_000;
-  private static readonly STALL_HEARTBEAT_FACTOR_NO_PENDING = 2;
+  private static readonly STALL_HEARTBEAT_FACTOR_NO_PENDING = 5;
   private static readonly MAX_RECENT_ROUNDS = 6;
 
 
@@ -200,6 +200,16 @@ export class ProgressMonitor {
         waitKind: 'unknown',
         waitDetail: detail || stage,
         lifecycleFinalState: true,
+      };
+   }
+
+    // running 阶段：模型正在推理中，属于外部 provider 等待，不应报告"疑似卡住"
+    if (stage === 'running') {
+      return {
+        ...baseLifecycle,
+        waitLayer: 'external',
+        waitKind: 'provider',
+        ...(detail ? { waitDetail: detail } : {}),
       };
     }
 
@@ -1345,6 +1355,71 @@ export class ProgressMonitor {
     return entries.sort((a, b) => b.lastUpdateTime - a.lastUpdateTime)[0];
   }
 
+  /**
+   * 获取指定 session 下所有 active workers 的 progress
+   * 用于多 agent 并行场景，确保每个 worker 都有独立的进度显示
+   */
+  getProgressAll(sessionId: string): SessionProgress[] {
+    const entries = this.getProgressEntriesBySession(sessionId)
+      .map(([, progress]) => progress)
+      .filter((p) => p.status === 'running' || p.status === 'queued');
+    
+    // 按最后更新时间排序，最新的在前
+    return entries.sort((a, b) => b.lastUpdateTime - a.lastUpdateTime);
+  }
+
+  /**
+   * 获取指定 session 下所有 active workers 的 progress reports
+   */
+  async getProgressReports(sessionId: string): Promise<ProgressReport[]> {
+    const progresses = this.getProgressAll(sessionId);
+    if (progresses.length === 0) return [];
+
+    const teamStatusStore = loadTeamStatusStore();
+    const teamStatus = Object.values(teamStatusStore.agents);
+
+    return Promise.all(
+      progresses.map(async (progress) => {
+        const pendingTool = this.findPendingMeaningfulTool(progress);
+        const now = Date.now();
+        const contextBreakdownKey = this.buildContextBreakdownKey(progress);
+        const contextEventChanged = this.detectContextEventChanged(progress, contextBreakdownKey);
+        const reportKey = this.buildReportKey(progress, contextBreakdownKey);
+        const stalled = this.detectStalled(progress, now, pendingTool);
+        const waitLayerInfo = this.resolveWaitLayer(progress, pendingTool, stalled, now);
+        const meaningfulToolCalls = progress.toolCallHistory.filter(
+          (tool) => !this.isToolRecordCompleted(tool) && !isLowValueToolCall(tool.toolName),
+        );
+        const completedToolCalls = progress.toolCallHistory.filter((tool) =>
+          this.isToolRecordCompleted(tool),
+        );
+        const reportToolCalls = meaningfulToolCalls.length > 0 ? meaningfulToolCalls : completedToolCalls.slice(-1);
+        const previewRoundDigest = meaningfulToolCalls.length > 0
+          ? this.createRoundDigest(progress, meaningfulToolCalls, now)
+          : undefined;
+
+        return {
+          type: 'progress_report' as const,
+          timestamp: new Date().toISOString(),
+          sessionId,
+          agentId: progress.agentId,
+          progress,
+          summary: this.buildSingleProgressSummary(
+            progress,
+            reportToolCalls,
+            contextEventChanged,
+            now,
+            waitLayerInfo,
+            previewRoundDigest,
+          ),
+          teamStatus,
+        };
+      }),
+    );
+  }
+
+
+
   resetProgressState(options?: {
     sessionId?: string;
     reason?: string;
@@ -1417,18 +1492,36 @@ export class ProgressMonitor {
     }
   }
 
-  async getProgressReport(sessionId: string): Promise<ProgressReport | null> {
-    const progress = this.getProgress(sessionId);
-    if (!progress) return null;
 
-    return {
-      type: 'progress_report',
-      timestamp: new Date().toISOString(),
-      sessionId,
-      agentId: progress.agentId,
-      progress,
-      summary: this.buildSingleProgressSummary(progress),
-    };
+  async getProgressReport(sessionId: string): Promise<ProgressReport | ProgressReport[] | null> {
+    const progresses = this.getProgressAll(sessionId);
+    if (progresses.length === 0) {
+      // Fallback: 尝试获取单个 progress 保持向后兼容
+      const singleProgress = this.getProgress(sessionId);
+      if (!singleProgress) return null;
+      return {
+        type: 'progress_report',
+        timestamp: new Date().toISOString(),
+        sessionId,
+        agentId: singleProgress.agentId,
+        progress: singleProgress,
+        summary: this.buildSingleProgressSummary(singleProgress),
+      };
+    }
+
+    // 多 worker 场景：返回所有 workers 的 reports
+    const reports = await this.getProgressReports(sessionId);
+    
+    // 记录多 worker 检测日志
+    if (reports.length > 1) {
+      log.info('[ProgressMonitor] Multi-worker progress detected', {
+        sessionId,
+        workerCount: reports.length,
+        workerIds: reports.map(r => r.agentId),
+      });
+    }
+    
+    return reports.length === 1 ? reports[0] : reports;
   }
 }
 
