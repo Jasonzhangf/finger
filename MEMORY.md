@@ -223,3 +223,12 @@
 - 每次功能开发和修复都必须按 **自内而外分层测试** 执行：unit → integration → orchestration/regression → local E2E → 真实运行/上线验证
 - 只通过本地测试不算结束；必须通过最高适用层级的真实运行路径验证
 - 对渠道、runtime、部署链路、外部接口相关修改，最终必须补一轮真实环境/上线验证证据
+
+### 2026-04-15: finger 本地 skill 的 testing section 必须写成操作手册
+
+**问题**：只写“自内而外”“闭环测试”这类原则，用户认为是空话，无法指导实际执行。
+
+**规则**：
+- testing section 必须明确写出 **有几层、每层测什么、对应哪些测试文件、具体命令、什么时候才算 done**
+- 至少要提供按变更类型分组的固定 playbook（如 runtime/context-history、channel/bridge、daemon/CLI、UI）
+- 对外部链路修改，必须明确写出 L5 真实运行验证方式；没有 L5 的说明就不算闭环测试说明

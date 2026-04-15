@@ -148,69 +148,305 @@ Choose the smallest set that proves the change.
 
 ## 4) Minimal validation matrix
 
-### Closure rule: local testing must be closed-loop
+### 4.1 Closure rule: testing must be inside-out and closed-loop
 
-For every feature and bug fix, testing must proceed **inside-out** and end with a real final verification:
+Every feature and bug fix must be tested **from the innermost owning logic outward to the real entry path**.
 
-1. inner logic / unit
-2. module coordination / integration
-3. workflow / orchestration regression
-4. user-facing local E2E when applicable
-5. **final online / deployed / real-runtime verification**
+The default Finger testing stack has **5 layers**:
 
-Work is **not done** when only local unit/integration tests pass.  
-It is done only after the highest applicable real execution path is verified successfully.
+| Layer | Goal | Typical test roots | Must answer |
+|---|---|---|---|
+| **L1 Internal Unit** | verify the smallest owning logic | `tests/unit/**`, `tests/modules/**` | “Did the real owning function/class/route logic change correctly?” |
+| **L2 Module Integration** | verify handoff between modules | `tests/integration/**` | “Do the modules still work together across the boundary I touched?” |
+| **L3 Workflow / Regression Gate** | verify lifecycle/session/runtime invariants | repo scripts + focused integration regression | “Did I break project-wide invariants?” |
+| **L4 Local E2E** | verify user-facing local full path | `tests/e2e/**`, `tests/e2e-ui/**` | “Does the whole local path behave correctly?” |
+| **L5 Real Runtime / Online Verification** | verify deployed/installed/real external path | installed daemon / manual real scripts / real route | “Does the actual runtime users rely on still work?” |
 
-### A. Localized logic change
-Run targeted unit tests first:
+**Done means all applicable layers have passed.**  
+If L5 is applicable, stopping at L1-L4 is **not** completion.
+
+### 4.2 Standard execution order (must follow)
+
+For every change:
+
+1. **Identify owning path**
+2. **Pick the applicable test stack**
+3. **Run L1 first**
+4. **Then L2**
+5. **Then L3 project gates**
+6. **Then L4 local E2E if the change reaches a user/runtime entry**
+7. **Then L5 real runtime / online verification if the change will actually be installed, deployed, or used through a real external interface**
+
+Do not jump directly to E2E to “see if it works”.  
+Do not stop after unit tests if the change crosses boundaries.
+
+### 4.3 How to choose the exact tests, not just the layer name
+
+Do not run a vague “some unit tests”.
+
+For every change, select tests in this order:
+1. **same noun** — tests sharing the module/domain noun you changed (`context-history`, `compact`, `session`, `channel`, `daemon`, `upgrade`, `runtime-panel`)
+2. **same boundary** — the next layer where that module hands off to another module
+3. **same user path** — the real entry path users hit
+4. **same shipped path** — the installed / running / external path if applicable
+
+Practical rule:
+- if you changed `src/runtime/context-history/**`, start with `tests/unit/runtime/context-history*`
+- if you changed `src/server/channel-*`, start with `tests/unit/server/channel-*`
+- if you changed `src/cli/**`, start with `tests/unit/cli/*`
+- if you changed `session-manager`, `dispatch`, `compact`, `rebuild`, also pull the session regression gates even if the direct file name differs
+
+If the direct owning test does not exist yet, add/fix that L1 test first. Do **not** skip inward layers because an outer e2e happens to fail.
+
+### 4.4 Fixed playbooks by change type
+
+Use these as the default operational recipes.
+
+#### Playbook A — runtime / context-history / compact / rebuild / session truth
+
+Use this when touching:
+- `src/runtime/**`
+- `src/orchestration/session-*`
+- `src/server/**` code that changes session selection, compact, rebuild, or ledger → session sync
+
+**L1 Internal Unit**
 
 ```bash
-pnpm vitest run tests/unit/<path>/*.test.ts
+pnpm vitest run \
+  tests/unit/runtime/context-history/executor.test.ts \
+  tests/unit/runtime/context-history-compact.test.ts \
+  tests/unit/runtime/context-history-compact-integrity.test.ts \
+  tests/unit/runtime/context-ledger-memory.test.ts \
+  tests/unit/runtime/auto-compact.test.ts \
+  tests/unit/runtime/runtime-facade-compaction-summarizer.test.ts \
+  tests/unit/orchestration/context-ledger-compact.regression.test.ts \
+  tests/unit/server/message-route-execution-compact-session-sync.test.ts
 ```
 
-### B. Cross-module change
-Run unit + integration:
+Add the nearest session-owner tests when ownership / ordering / fallback changed:
 
 ```bash
-pnpm vitest run tests/unit/<path>/*.test.ts
-pnpm vitest run tests/integration/<path>/*.test.ts
+pnpm vitest run \
+  tests/unit/orchestration/session-manager-message-order.test.ts \
+  tests/unit/orchestration/session-manager-ledger-fallback.test.ts \
+  tests/unit/orchestration/session-manager-transient-ledger-resilience.test.ts
 ```
 
-### C. Lifecycle / session / dispatch / context-history change
-Run the relevant targeted tests, then these repo gates:
+**L2 Module Integration**
+
+```bash
+pnpm vitest run \
+  tests/integration/runtime/compact-integration.test.ts \
+  tests/integration/context-lifecycle-regression.test.ts \
+  tests/integration/session-manager-persistence.test.ts \
+  tests/integration/session-compact-projection-regression.test.ts
+```
+
+**L3 Workflow / Regression Gate**
 
 ```bash
 pnpm run test:session-regression
 pnpm run test:compact-projection-regression
+pnpm run build:backend
 ```
 
-Run `test:compact-projection-regression` when compact / projection / rebuild / session snapshot behavior is touched.
+**L4 Local E2E**
 
-### D. Runtime/backend change before handoff
+```bash
+pnpm vitest run tests/e2e/context-history-rebuild.test.ts
+```
+
+**L5 Real Runtime / Online Verification**
+
+```bash
+npm run build:install
+npm run daemon:start
+npm run evidence:context-rebuild:real-runtime
+```
+
+Only claim done when the rebuilt context path is verified through the real installed runtime or an equivalent real request path.
+
+#### Playbook B — channel / bridge / gateway / QQBot
+
+Use this when touching:
+- `src/bridges/**`
+- `src/server/modules/channel-*`
+- `src/server/**` route/session selection used by channel delivery
+- `src/cli/finger-gateway-bridge.ts`
+
+**L1 Internal Unit**
+
+```bash
+pnpm vitest run \
+  tests/unit/bridges/channel-bridge-input.test.ts \
+  tests/unit/bridges/channel-bridge-output.test.ts \
+  tests/unit/server/channel-bridge-hub-route.test.ts \
+  tests/unit/server/channel-bridge-loading.test.ts \
+  tests/unit/server/channel-link-auto-detail.test.ts \
+  tests/unit/server/channel-session-selection.test.ts \
+  tests/unit/server/dispatch-session-selection.test.ts
+```
+
+**L2 Module Integration**
+
+```bash
+pnpm vitest run \
+  tests/integration/bridges/channel-bridge-hub-integration.test.ts \
+  tests/integration/channel-session-routing.test.ts
+```
+
+**L3 Workflow / Regression Gate**
+
+```bash
+pnpm run test:session-regression
+pnpm run build:backend
+```
+
+**L4 Local E2E**
+
+```bash
+pnpm vitest run tests/e2e/gateway-bridge-qqbot.test.ts
+```
+
+**L5 Real Runtime / Online Verification**
+
+```bash
+npm run build:install
+npm run daemon:start
+node tests/manual/test-channel-e2e-real.mjs
+node tests/manual/test-qqbot-e2e.mjs
+node tests/manual/test-real-qqbot.mjs
+```
+
+For channel work, L5 is the first layer that proves the real external edge is still correct. L1-L4 alone are not enough for “上线可用”.
+
+#### Playbook C — daemon / CLI / upgrade / installed runtime
+
+Use this when touching:
+- `src/cli/**`
+- `src/daemon/**`
+- upgrade pipeline / package manager / health check wiring
+
+**L1 Internal Unit**
+
+```bash
+pnpm vitest run \
+  tests/unit/cli/daemon.test.ts \
+  tests/unit/cli/upgrade.test.ts \
+  tests/unit/orchestration/daemon.test.ts \
+  tests/unit/orchestration/pre-upgrade-health-check.test.ts \
+  tests/unit/orchestration/upgrade-engine.test.ts \
+  tests/unit/orchestration/upgrade-package-manager.test.ts \
+  tests/unit/scripts/daemon-process-matchers.test.ts
+```
+
+**L2 Module Integration**
+
+```bash
+pnpm vitest run \
+  tests/integration/daemon-guard/daemon-guard.test.ts \
+  tests/integration/system-agent-runtime.test.ts \
+  tests/integration/module-upgrade-integration.test.ts \
+  tests/integration/full-upgrade-pipeline.test.ts \
+  tests/integration/runtime-e2e-verification.test.ts
+```
+
+**L3 Workflow / Regression Gate**
 
 ```bash
 pnpm run build:backend
 ```
 
-### E. Channel / external interface change
-Use inside-out order:
+**L4 Local E2E**
 
-1. unit: routing / normalization / session selection
-2. integration: bridge ↔ hub ↔ runtime coordination
-3. E2E: real bridge process / real message path when required
+If there is a dedicated local e2e for the exact path, run it. If not, promote directly from L3 to L5; do **not** pretend integration already equals installed-runtime verification.
 
-Typical commands:
+**L5 Real Runtime / Online Verification**
 
 ```bash
-pnpm vitest run tests/unit/server/channel-*.test.ts tests/unit/server/dispatch-session-selection.test.ts
-pnpm vitest run tests/integration/bridges/*.test.ts
-pnpm vitest run tests/e2e/gateway-bridge-*.test.ts
+npm run build:install
+npm run daemon:start
 ```
 
-If the change will be deployed or affects a real runtime path, add the final deployed/online verification step before declaring completion.
+Then execute the real installed CLI / daemon path you changed and capture the real output/log evidence.
 
-### F. Type gate
-Use the smallest suitable TS gate for the change. If backend build is already run, do not duplicate a weaker TS-only gate.
+#### Playbook D — UI / session panel / runtime panel
+
+Use this when touching:
+- `src/ui/**`
+- UI contracts consumed by runtime/session panels
+
+**L1 Internal Unit**
+
+```bash
+pnpm vitest run \
+  tests/unit/ui/agent-session-panel.test.ts \
+  tests/unit/ui/runtime-auto-switch.test.tsx \
+  tests/unit/cli/session-panel.test.ts
+```
+
+**L4 Local E2E**
+
+```bash
+pnpm vitest run \
+  tests/e2e-ui/contracts/api-contracts.test.ts \
+  tests/e2e-ui/contracts/error-contracts.test.ts \
+  tests/e2e-ui/contracts/schema-validation.test.ts \
+  tests/e2e-ui/flows/create-session-flow.test.ts \
+  tests/e2e-ui/flows/dispatch-task-flow.test.ts \
+  tests/e2e-ui/flows/runtime-panel-flow.test.ts \
+  tests/e2e-ui/stability/long-running-session.test.ts \
+  tests/e2e-ui/stability/memory-pressure.test.ts \
+  tests/e2e-ui/stability/reconnect.test.ts
+```
+
+**L5 Real Runtime / Online Verification**
+
+```bash
+pnpm run build:ui
+pnpm run test:ui
+```
+
+Then open the real running UI path you changed and verify the actual interaction, not only the contract tests.
+
+### 4.5 Path → required minimum stack
+
+Use this table directly.
+
+| Changed area | Minimum stack |
+|---|---|
+| `src/blocks/**`, pure utils, pure runtime helpers with no outward boundary | direct L1 only |
+| `src/runtime/**`, `src/core/**` | Playbook A through L3; if user/runtime entry changed, continue to L4/L5 |
+| session / lifecycle / dispatch / compact / rebuild | full Playbook A, normally through L5 |
+| `src/orchestration/**`, `src/server/**`, `src/serverx/**` | L1 → matching L2 → matching L3; if user path changed, continue outward |
+| channel / bridge / gateway / QQBot | full Playbook B through L5 |
+| agent prompt / tool wiring / context injection | nearest L1 + targeted L2; add L3 if runtime behavior changed |
+| CLI / daemon / upgrade | full Playbook C through L5 |
+| `src/ui/**` | Playbook D through L4; if shipped/running UI changed, continue to L5 real interaction |
+
+### 4.6 When work is actually done
+
+Use this completion rule, not intuition:
+
+- **Only L1 passed** → owning logic is better, but the feature/fix is **not done**
+- **L1 + L2 passed** → module boundary looks good, but end-user path is **not done**
+- **L3 passed** → repo invariants still hold, but user path may still be broken
+- **L4 passed** → local full path works
+- **L5 passed (when applicable)** → real installed / deployed / external path works, now it can be called complete
+
+Typical done thresholds:
+- pure internal helper refactor with no outward behavior change → may stop at L1
+- runtime/session/dispatch change → usually stops only after L3 or L4, and often L5
+- channel / external bridge / daemon / installed CLI / shipped UI change → must reach L5
+
+### 4.7 Mandatory stop conditions
+
+Stop and fix before moving outward if:
+- L1 fails → fix owning logic first
+- L2 fails → fix boundary contract first
+- L3 fails → do not hand off
+- L4 fails → do not claim local full path works
+- L5 is applicable and missing → do not claim “done” / “可上线” / “已闭环”
 
 ---
 
